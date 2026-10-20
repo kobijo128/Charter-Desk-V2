@@ -25,10 +25,10 @@ The anon key is meant to be public. Pilots can only read data through the databa
 ### 2. Put the code on GitHub
 
 1. Create a new GitHub repository (for example `charter-va`) and push this folder to it.
-2. Edit `web/config.js` with your Project URL and anon key. Set `trackerDownloadUrl` to `https://github.com/<you>/charter-va/releases/tag/tracker-latest`.
+2. Edit `web/config.js` with your Project URL and anon key. Set `trackerDownloadUrl` to `https://github.com/kobijo128/Charter-Desk-V2/releases/tag/tracker-latest`.
 3. In the repository, go to **Settings → Pages** and set **Source** to **GitHub Actions**.
 4. Push to `main`. Two workflows run:
-   - **Publish website** puts the site at `https://<you>.github.io/charter-va/`.
+   - **Publish website** puts the site at `https://kobijo128.github.io/Charter-Desk-V2/`.
    - **Build tracker** compiles `CharterDeskTracker.exe` and attaches it to the `tracker-latest` release.
 
 ### 3. Connect sign-in to your site
