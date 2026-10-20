@@ -986,3 +986,16 @@ begin
     execute format('grant execute on function public.%s to anon, authenticated', f);
   end loop;
 end $$;
+
+-- pin the search path on internal helpers (Supabase security advisor)
+do $$
+declare f text;
+begin
+  foreach f in array array['nm(float8,float8,float8,float8)','ap_nm(text,text)','block_h(int,int)','op_rate(int,jsonb)',
+     'ap_weight(text[],int,int)','future_loc(uuid)','new_reg()','flt_no(uuid,boolean)','add_ledger(uuid,text,bigint)',
+     'gen_route(text,int,int)','spawn_request(text,int,int)','rebuild_ferries(uuid)',
+     'book_trip(uuid,uuid,text,text,int,int,text,text,timestamptz,int,text)','schedule_call(uuid)',
+     'resolve_request(bigint)','maintain()','settle(bigint)','me()'] loop
+    execute format('alter function public.%s set search_path = public', f);
+  end loop;
+end $$;
