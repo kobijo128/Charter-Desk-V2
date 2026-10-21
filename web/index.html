@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Charter Desk FS</title>
 <meta name="theme-color" content="#0E1A2B">
+<script>try{var t=localStorage.getItem("cd-theme");if(t&&t!=="system")document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
@@ -19,6 +20,7 @@
       <div class="gauge"><label>Reputation</label><span id="gRep"></span><div class="repbar"><i id="gRepBar"></i></div></div>
       <div class="gauge"><label id="gLocalLabel">Local</label><span id="gLocal"></span></div>
       <div class="gauge"><label>UTC</label><span id="gUtc"></span></div>
+      <button class="iconbtn" id="themeBtn" data-act="theme" type="button" title="Switch between automatic, light and dark">Theme: auto</button>
       <button class="iconbtn" id="soundBtn" data-act="sound" type="button">Ringer off</button>
       <button class="iconbtn" data-act="signout" type="button">Sign out</button>
     </div>
@@ -27,6 +29,7 @@
 </div></header>
 <main class="wrap" id="main"><div class="empty">Loading…</div></main>
 <div id="call"></div>
+<div id="cabin"></div>
 <div id="toasts" aria-live="polite"></div>
 <div id="modal"></div>
 

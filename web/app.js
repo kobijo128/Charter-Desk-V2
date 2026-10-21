@@ -76,6 +76,16 @@ async function q(promise) {
   return data;
 }
 
+/* ---------- theme ---------- */
+const THEMES = ['system', 'light', 'dark'];
+let THEME = 'system'; try { THEME = localStorage.getItem('cd-theme') || 'system' } catch (e) { }
+function applyTheme() { if (THEME === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = THEME }
+applyTheme();
+const isDark = () => THEME === 'dark' || (THEME === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tileUrl = () => `https://{s}.basemaps.cartocdn.com/${isDark() ? 'dark_all' : 'rastertiles/voyager'}/{z}/{x}/{y}{r}.png`;
+try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (THEME === 'system' && D.me) { renderHeader(); renderTab() } }) } catch (e) { }
+
 /* ---------- geometry and planning ---------- */
 function nmLL(la1, lo1, la2, lo2) { const a = Math.sin((la2 - la1) * R / 2) ** 2 + Math.cos(la1 * R) * Math.cos(la2 * R) * Math.sin((lo2 - lo1) * R / 2) ** 2; return Math.round(2 * 3440.065 * Math.asin(Math.min(1, Math.sqrt(a)))) }
 function nm(a, b) { const A = D.airports[a], B = D.airports[b]; return A && B ? nmLL(A.lat, A.lon, B.lat, B.lon) : 0 }
@@ -237,9 +247,10 @@ async function doPoll() {
   if (polling) return; polling = true;
   try {
     const res = await rpc('poll');
+    D.pax = res.pax || [];
     for (const e of (res.events || [])) toast(e.won ? `Won: ${e.client}, ${e.route} at ${money(e.amount)}. It's in your trips.` : `Lost ${e.route}. ${e.note}`, e.won ? 'ok' : 'bad');
     await refreshCore();
-    renderHeader(); renderCall();
+    renderHeader(); renderCall(); renderCabin();
     if (['market', 'trips', 'crew'].includes(UI.tab) && !$('#modal').children.length && !(UI.tab === 'trips' && UI.plan)) renderTabSafe();
   } catch (e) { console.warn(e) }
   polling = false;
@@ -362,6 +373,7 @@ function renderHeader() {
   $('#gRep').textContent = Math.round(D.me.rep) + ' / 100';
   $('#gRepBar').style.width = D.me.rep + '%';
   $('#soundBtn').textContent = UI.sound ? 'Ringer on' : 'Ringer off';
+  $('#themeBtn').textContent = THEME === 'system' ? 'Theme: auto' : THEME === 'dark' ? 'Theme: dark' : 'Theme: light';
   const counts = { market: D.bids.filter(b => b.status === 'pending').length, trips: D.trips.length };
   $('#tabs').innerHTML = TABS.filter(t => t[0] !== 'staff' || D.me.is_admin).map(([k, l]) =>
     `<a href="#${k}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}${counts[k] ? `<span class="ct">${counts[k]}</span>` : ''}</a>`).join('');
@@ -375,6 +387,20 @@ function updateCountdowns() {
   const now = Date.now();
   document.querySelectorAll('[data-cd]').forEach(e => e.textContent = mmss(+e.dataset.cd - now));
   document.querySelectorAll('[data-bar]').forEach(e => { const a = +e.dataset.from, b = +e.dataset.until; e.style.width = clamp((now - a) / (b - a) * 100, 0, 100) + '%' });
+}
+function renderCabin() {
+  const r = (D.pax || [])[0], el = $('#cabin');
+  if (!r) { el.innerHTML = ''; el.dataset.id = ''; return }
+  if (el.dataset.id === String(r.id)) return;
+  el.dataset.id = r.id;
+  const trip = D.trips.find(t => t.id === r.trip_id);
+  el.innerHTML = `<div class="cabincard" role="alertdialog" aria-label="Cabin call from seat ${esc(r.seat)}">
+   <div class="cabinhd"><span class="lbl">Cabin call · seat ${esc(r.seat)}</span><span class="hint">answer in <span data-cd="${ts(r.expires_at)}"></span></span></div>
+   <p class="who">${esc(r.who.charAt(0).toUpperCase() + r.who.slice(1))}${trip ? ` · ${trip.flt}` : ''}</p>
+   <q>${esc(r.message)}</q>
+   <div class="cabinbtns">${r.choices.map((c, i) => `<button type="button" class="btn" data-act="paxans" data-id="${r.id}" data-i="${i}">${esc(c)}</button>`).join('')}</div></div>`;
+  if (UI.sound) { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain(), t0 = actx.currentTime; o.frequency.setValueAtTime(880, t0); o.frequency.setValueAtTime(660, t0 + 0.18); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.08, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5); o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + 0.5) } catch (e) { } }
+  updateCountdowns();
 }
 function renderCall() {
   const c = D.calls[0]; if (!c) { $('#call').innerHTML = ''; return }
@@ -444,7 +470,9 @@ function renderMarket() {
   <div class="panel"><h3>Recent decisions</h3>${recent.length ? recent.map(b => `<div class="result"><span class="tag ${b.status}">${b.status === 'won' ? 'Won' : 'Lost'}</span><div><span class="mono">${money(b.amount)}</span><br><span class="muted">${esc(b.note || '')}</span></div></div>`).join('') : '<p class="muted" style="margin:0;font-size:13px">Broker decisions appear here.</p>'}</div>
  </aside></div>`;
   updateCountdowns();
+  SEEN_READY = true;
 }
+const SEEN_JOBS = new Set(); let SEEN_READY = false;
 function strip({ r, ok, q: qd }, ac) {
   const t = typeOf(ac), bid = D.bids.find(b => b.request_id === r.id), A = D.airports[r.from_icao] || {}, B = D.airports[r.to_icao] || {};
   const deciding = r.status === 'deciding';
@@ -452,7 +480,8 @@ function strip({ r, ok, q: qd }, ac) {
   if (!ok) act = `<span class="why">${esc(whyNot(t, r))}</span>`;
   else if (bid) act = `<span class="placed">Bid ${kmoney(bid.amount)}</span><span class="cd">decision <span data-cd="${ts(r.decide_at)}"></span></span>`;
   else act = `<button type="button" data-act="bid" data-id="${r.id}">Quote</button><span class="cd">${deciding ? `deciding <span data-cd="${ts(r.decide_at)}"></span>` : `closes <span data-cd="${ts(r.expires_at)}"></span>`}</span>`;
-  return `<article class="job cat-${r.cat} ${ok ? '' : 'na'}">
+  const fresh = !SEEN_JOBS.has(r.id); SEEN_JOBS.add(r.id);
+  return `<article class="job cat-${r.cat} ${ok ? '' : 'na'} ${fresh && SEEN_READY ? 'fresh' : ''}">
   <div class="where"><span class="cities">${esc(A.city || r.from_icao)} <i>to</i> ${esc(B.city || r.to_icao)}</span>
    <span class="sub"><b>${r.from_icao} – ${r.to_icao}</b> · ${esc(r.client)} · ${r.pax} passenger${r.pax > 1 ? 's' : ''} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span>
    ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first</span>` : ''}</div>
@@ -514,17 +543,17 @@ function drawMap(cv, trip) {
   const la = pts.map(a => a.lat), lo = pts.map(a => a.lon); const minLa = Math.min(...la), maxLa = Math.max(...la), minLo = Math.min(...lo), maxLo = Math.max(...lo);
   const midLat = (minLa + maxLa) / 2, k = Math.cos(midLat * R); const sp = Math.max((maxLo - minLo) * k / W, (maxLa - minLa) / H, 2 / Math.min(W, H)) * 1.45;
   const cx = (minLo + maxLo) / 2, cy = midLat; const X = lon => W / 2 + (lon - cx) * k / sp, Y = lat => H / 2 - (lat - cy) / sp;
-  c.fillStyle = '#EEF2F6'; c.fillRect(0, 0, W, H);
-  const step = sp * Math.min(W, H) > 20 ? 10 : sp * Math.min(W, H) > 8 ? 5 : 2; c.strokeStyle = '#DCE2EA'; c.lineWidth = 1; c.font = '10px "DM Mono",monospace'; c.fillStyle = '#8A95A6';
+  c.fillStyle = cssv('--map-sea'); c.fillRect(0, 0, W, H);
+  const step = sp * Math.min(W, H) > 20 ? 10 : sp * Math.min(W, H) > 8 ? 5 : 2; c.strokeStyle = cssv('--map-grid'); c.lineWidth = 1; c.font = '10px "DM Mono",monospace'; c.fillStyle = cssv('--map-muted');
   for (let g = Math.floor((cy - H * sp / 2) / step) * step; g < cy + H * sp / 2; g += step) { const y = Y(g); c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); c.fillText(`${Math.abs(g)}°${g >= 0 ? 'N' : 'S'}`, 4, y - 3) }
   for (let g = Math.floor((cx - W * sp / k / 2) / step) * step; g < cx + W * sp / k / 2; g += step) { const x = X(g); c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); c.fillText(`${Math.abs(g)}°${g >= 0 ? 'E' : 'W'}`, x + 3, H - 5) }
-  D.apList.forEach(a => { if (a.size === 'small') return; const x = X(a.lon), y = Y(a.lat); if (x < 0 || x > W || y < 0 || y > H) return; c.fillStyle = '#D3DAE3'; c.beginPath(); c.arc(x, y, 2, 0, 7); c.fill() });
+  D.apList.forEach(a => { if (a.size === 'small') return; const x = X(a.lon), y = Y(a.lat); if (x < 0 || x > W || y < 0 || y > H) return; c.fillStyle = cssv('--map-dot'); c.beginPath(); c.arc(x, y, 2, 0, 7); c.fill() });
   const gc = (A, B, dash, col, w) => { c.save(); c.setLineDash(dash); c.strokeStyle = col; c.lineWidth = w; c.beginPath(); const n = 40; const p1 = [A.lat * R, A.lon * R], p2 = [B.lat * R, B.lon * R]; const d = 2 * Math.asin(Math.sqrt(Math.sin((p2[0] - p1[0]) / 2) ** 2 + Math.cos(p1[0]) * Math.cos(p2[0]) * Math.sin((p2[1] - p1[1]) / 2) ** 2)) || 1e-9; for (let i = 0; i <= n; i++) { const f = i / n; const a = Math.sin((1 - f) * d) / Math.sin(d), b = Math.sin(f * d) / Math.sin(d); const x = a * Math.cos(p1[0]) * Math.cos(p1[1]) + b * Math.cos(p2[0]) * Math.cos(p2[1]), y = a * Math.cos(p1[0]) * Math.sin(p1[1]) + b * Math.cos(p2[0]) * Math.sin(p2[1]), z = a * Math.sin(p1[0]) + b * Math.sin(p2[0]); const lat = Math.atan2(z, Math.hypot(x, y)) / R, lon = Math.atan2(y, x) / R; i ? c.lineTo(X(lon), Y(lat)) : c.moveTo(X(lon), Y(lat)) } c.stroke(); c.restore() };
   const F = D.airports[trip.from_icao], T = D.airports[trip.to_icao], AL = D.airports[alt];
-  if (AL) gc(T, AL, [2, 3], '#8A95A6', 1);
-  gc(F, T, trip.kind === 'ferry' ? [5, 4] : [], trip.kind === 'ferry' ? '#B88A3A' : '#0E1A2B', 2.5);
-  const lab = (a, col, txt, r) => { const x = X(a.lon), y = Y(a.lat); c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.font = '600 12px "DM Mono",monospace'; c.fillStyle = '#0E1A2B'; const tw = c.measureText(txt).width; let tx = x + 8; if (tx + tw > W - 4) tx = x - 8 - tw; c.fillText(txt, tx, y - 6) };
-  if (AL) { const near = Math.hypot(X(AL.lon) - X(T.lon), Y(AL.lat) - Y(T.lat)) < 40; if (near) { c.fillStyle = '#8A95A6'; c.beginPath(); c.arc(X(AL.lon), Y(AL.lat), 2.5, 0, 7); c.fill() } else lab(AL, '#8A95A6', alt + ' ALT', 2.5) } lab(F, '#8A6526', trip.from_icao, 4.5); lab(T, '#8A6526', trip.to_icao, 4.5);
+  if (AL) gc(T, AL, [2, 3], cssv('--map-muted'), 1);
+  gc(F, T, trip.kind === 'ferry' ? [5, 4] : [], trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'), 2.5);
+  const lab = (a, col, txt, r) => { const x = X(a.lon), y = Y(a.lat); c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.font = '600 12px "DM Mono",monospace'; c.fillStyle = cssv('--map-label'); const tw = c.measureText(txt).width; let tx = x + 8; if (tx + tw > W - 4) tx = x - 8 - tw; c.fillText(txt, tx, y - 6) };
+  if (AL) { const near = Math.hypot(X(AL.lon) - X(T.lon), Y(AL.lat) - Y(T.lat)) < 40; if (near) { c.fillStyle = cssv('--map-muted'); c.beginPath(); c.arc(X(AL.lon), Y(AL.lat), 2.5, 0, 7); c.fill() } else lab(AL, cssv('--map-muted'), alt + ' ALT', 2.5) } lab(F, cssv('--map-mark'), trip.from_icao, 4.5); lab(T, cssv('--map-mark'), trip.to_icao, 4.5);
 }
 
 function renderHangar() {
@@ -769,17 +798,17 @@ async function drawGlobe(cv, trip, ofp) {
   const path = d3.geoPath(proj, c), land = await landShapes(), grat = d3.geoGraticule10();
   const draw = () => {
     c.clearRect(0, 0, W, H);
-    c.beginPath(); path({ type: 'Sphere' }); c.fillStyle = '#DCE7F1'; c.fill();
-    c.beginPath(); path(grat); c.strokeStyle = 'rgba(14,26,43,.08)'; c.lineWidth = 1; c.stroke();
-    if (land) { c.beginPath(); path(land); c.fillStyle = '#F7F4EC'; c.fill(); c.strokeStyle = '#C9C2B0'; c.lineWidth = .6; c.stroke() }
-    if (AL) { c.beginPath(); path({ type: 'LineString', coordinates: [[B.lon, B.lat], [AL.lon, AL.lat]] }); c.setLineDash([3, 4]); c.strokeStyle = '#8A95A6'; c.lineWidth = 1.2; c.stroke(); c.setLineDash([]) }
-    c.beginPath(); path(route); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : '#0E1A2B'; c.lineWidth = 3; c.stroke();
+    c.beginPath(); path({ type: 'Sphere' }); c.fillStyle = cssv('--map-sea'); c.fill();
+    c.beginPath(); path(grat); c.strokeStyle = cssv('--map-grid'); c.lineWidth = 1; c.stroke();
+    if (land) { c.beginPath(); path(land); c.fillStyle = cssv('--map-land'); c.fill(); c.strokeStyle = cssv('--map-land-edge'); c.lineWidth = .6; c.stroke() }
+    if (AL) { c.beginPath(); path({ type: 'LineString', coordinates: [[B.lon, B.lat], [AL.lon, AL.lat]] }); c.setLineDash([3, 4]); c.strokeStyle = cssv('--map-muted'); c.lineWidth = 1.2; c.stroke(); c.setLineDash([]) }
+    c.beginPath(); path(route); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'); c.lineWidth = 3; c.stroke();
     const dot = (a, label, col, r) => { const p = proj([a.lon, a.lat]); if (!p || d3.geoDistance([a.lon, a.lat], proj.invert([W / 2, H / 2])) > Math.PI / 2) return;
       c.beginPath(); c.arc(p[0], p[1], r, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
-      c.font = '600 12px "DM Mono", monospace'; c.fillStyle = '#0E1A2B'; c.fillText(label, p[0] + 8, p[1] - 8) };
-    if (AL) { const pa = proj([AL.lon, AL.lat]), pb = proj([B.lon, B.lat]), near = pa && pb && Math.hypot(pa[0] - pb[0], pa[1] - pb[1]) < 60; dot(AL, near ? '' : AL.icao + ' ALT', '#8A95A6', 3) }
-    dot(A, A.icao, '#8A6526', 5); dot(B, B.icao, '#8A6526', 5);
-    c.beginPath(); path({ type: 'Sphere' }); c.strokeStyle = 'rgba(14,26,43,.25)'; c.lineWidth = 1; c.stroke();
+      c.font = '600 12px "DM Mono", monospace'; c.fillStyle = cssv('--map-label'); c.fillText(label, p[0] + 8, p[1] - 8) };
+    if (AL) { const pa = proj([AL.lon, AL.lat]), pb = proj([B.lon, B.lat]), near = pa && pb && Math.hypot(pa[0] - pb[0], pa[1] - pb[1]) < 60; dot(AL, near ? '' : AL.icao + ' ALT', cssv('--map-muted'), 3) }
+    dot(A, A.icao, cssv('--map-mark'), 5); dot(B, B.icao, cssv('--map-mark'), 5);
+    c.beginPath(); path({ type: 'Sphere' }); c.strokeStyle = cssv('--map-land-edge'); c.lineWidth = 1; c.stroke();
   };
   draw();
   let drag = null;
@@ -812,7 +841,7 @@ const planeSvg = (hdg, col) => `<svg width="26" height="26" viewBox="0 0 24 24" 
 async function renderLive() {
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Live map</h2><p id="liveNote">Pilots flying with the tracker right now. Updates every 15 seconds.</p></div></div><div id="livemap"></div></div>`;
   liveMap = L.map('livemap', { worldCopyJump: true }).setView([48, 4], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(liveMap);
+  L.tileLayer(tileUrl(), { attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(liveMap);
   liveLayer = L.layerGroup().addTo(liveMap);
   await refreshLive(true);
 }
@@ -824,7 +853,7 @@ async function refreshLive(fit) {
   rows.forEach(p => {
     const t = p.trips, A = t && D.airports[t.from_icao], B = t && D.airports[t.to_icao];
     if (A && B) L.polyline([[A.lat, A.lon], [p.lat, p.lon], [B.lat, B.lon]], { color: '#8A6526', weight: 1.5, opacity: .7, dashArray: '4 4' }).addTo(liveLayer);
-    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'plane-icon', html: planeSvg(p.hdg || 0, p.pilot_id === D.uid ? '#B88A3A' : '#0E1A2B'), iconSize: [26, 26], iconAnchor: [13, 13] }) })
+    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'plane-icon', html: planeSvg(p.hdg || 0, p.pilot_id === D.uid ? '#D4B06A' : (isDark() ? '#E7ECF3' : '#0E1A2B')), iconSize: [26, 26], iconAnchor: [13, 13] }) })
       .bindPopup(`<b>${esc(p.pilots?.callsign)}</b> · ${esc(p.pilots?.company)}<br>${t ? `${esc(t.flt)} ${t.from_icao} → ${t.to_icao}<br>` : ''}<span class="mono">${(p.alt || 0).toLocaleString()} ft · ${p.gs || 0} kt · ${esc(p.phase || '')}</span>`).addTo(liveLayer);
     bounds.push([p.lat, p.lon]);
   });
@@ -865,7 +894,7 @@ async function openPirep(id, staff) {
    <div class="btns" style="justify-content:flex-end"><button type="button" class="btn danger" data-act="review" data-id="${p.id}" data-ok="0">Reject</button><button type="button" class="btn pri" data-act="review" data-id="${p.id}" data-ok="1">Accept and pay</button></div>` : `<div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Close</button></div>`}
   </div></div>`;
   const m = L.map('pmap', { attributionControl: true });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(m);
+  L.tileLayer(tileUrl(), { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(m);
   const path = (p.path || []).map(x => [x[0], x[1]]);
   const A = D.airports[t.from_icao], B = D.airports[t.to_icao];
   if (A && B) L.polyline([[A.lat, A.lon], [B.lat, B.lon]], { color: '#8A95A6', weight: 1, dashArray: '3 4' }).addTo(m);
@@ -1005,6 +1034,8 @@ document.addEventListener('click', async e => {
   if (a === 'scrim') { if (e.target === b) closeModal(); return }
   if (a === 'close') closeModal();
   if (a === 'signout') { await sb.auth.signOut(); location.reload() }
+  if (a === 'paxans') { try { const res = await rpc('answer_request', { p_req: +id, p_choice: +b.dataset.i }); toast(`${res.good ? '✓' : '·'} "${res.reply}"`, res.good ? 'ok' : ''); } catch (err) { toast(err.message, 'bad') } D.pax = (D.pax || []).filter(x => x.id !== +id); $('#cabin').dataset.id = ''; renderCabin(); return }
+  if (a === 'theme') { THEME = THEMES[(THEMES.indexOf(THEME) + 1) % 3]; try { localStorage.setItem('cd-theme', THEME) } catch (_) { } applyTheme(); renderHeader(); if (liveMap) { liveMap.remove(); liveMap = null } renderTab(); return }
   if (a === 'sound') { UI.sound = !UI.sound; try { localStorage.setItem('cd-ringer', UI.sound ? '1' : '0') } catch (_) { } if (UI.sound) { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume() } catch (_) { } } renderHeader() }
   if (a === 'pickac') { UI.acId = id; renderTab() }
   if (a === 'band') { UI.band = b.dataset.k; renderTab() }

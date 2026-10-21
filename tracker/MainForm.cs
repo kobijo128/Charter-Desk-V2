@@ -5,7 +5,7 @@ namespace CharterDeskTracker;
 
 public sealed class MainForm : Form
 {
-    const string Version = "0.1.0";
+    const string Version = "0.2.0";
 
     Config _cfg = Config.Load();
     Api _api;
@@ -26,6 +26,10 @@ public sealed class MainForm : Form
     readonly Label _phase = new() { AutoSize = true, Font = new Font("Segoe UI Semibold", 16f), Text = "No flight" };
     readonly Label _live = new() { AutoSize = true, Font = new Font("Consolas", 10f) };
     readonly Label _landing = new() { AutoSize = true, Font = new Font("Consolas", 10f) };
+    readonly GroupBox _cabin = new() { Text = "Cabin call", Dock = DockStyle.Top, AutoSize = true, Visible = false, Padding = new Padding(10) };
+    readonly Label _cabinMsg = new() { AutoSize = true, MaximumSize = new Size(620, 0), Font = new Font("Segoe UI", 10.5f) };
+    readonly FlowLayoutPanel _cabinBtns = new() { AutoSize = true, Dock = DockStyle.Bottom };
+    long _cabinId;
     readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f) };
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 250 };
     readonly System.Windows.Forms.Timer _connect = new() { Interval = 5000 };
@@ -55,7 +59,11 @@ public sealed class MainForm : Form
         root.Controls.Add(btns);
 
         var status = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
-        status.Controls.AddRange(new Control[] { _phase, _live, _landing });
+        status.Controls.AddRange(new Control[] { _phase, _live, _landing, _cabin });
+        var cabinInner = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill };
+        cabinInner.Controls.AddRange(new Control[] { _cabinMsg, _cabinBtns });
+        _cabin.Controls.Add(cabinInner);
+        _cabin.MinimumSize = new Size(640, 0);
         root.Controls.Add(status);
         root.Controls.Add(_log);
         Controls.Add(root);
@@ -230,11 +238,52 @@ public sealed class MainForm : Form
         if (_rec.LandingFpm.HasValue)
             _landing.Text = $"Landing {_rec.LandingFpm:0} fpm  {_rec.LandingG:0.00} G  bounces {_rec.Bounces}";
 
+        if (_rec.Phase == Phase.Arrived || _rec.Phase == Phase.TaxiIn) _cabin.Visible = false;
         if (_rec.Phase != Phase.Waiting && _rec.Phase != Phase.Arrived && (DateTime.UtcNow - _lastPositionSent).TotalSeconds >= 15)
         {
             _lastPositionSent = DateTime.UtcNow;
-            try { await _api.Position(_rec.Booking.Id, s, _rec.Phase); } catch { /* live map only; ignore blips */ }
+            try { ShowCabin((await _api.Ping(_rec.Booking.Id, s, _rec.Phase))?["request"]); } catch { /* live map only; ignore blips */ }
         }
+    }
+
+    void ShowCabin(JsonNode req)
+    {
+        if (req == null) { _cabin.Visible = false; _cabinId = 0; return; }
+        var id = req["id"]!.GetValue<long>();
+        if (id == _cabinId) return;
+        _cabinId = id;
+        _cabin.Text = $"Cabin call · seat {req["seat"]} · {req["who"]}";
+        _cabinMsg.Text = $"\"{req["message"]}\"\nAnswer within 5 minutes.";
+        _cabinBtns.Controls.Clear();
+        int i = 0;
+        foreach (var c in req["choices"]!.AsArray())
+        {
+            int choice = i++;
+            var b = new Button { Text = c!.GetValue<string>(), AutoSize = true, Padding = new Padding(6, 2, 6, 2) };
+            b.Click += async (_, _) =>
+            {
+                try
+                {
+                    var r = await _api.Answer(id, choice);
+                    Log($"Seat {req["seat"]}: {r?["reply"]}");
+                }
+                catch (Exception ex) { Log(ex.Message); }
+                _cabin.Visible = false;
+            };
+            _cabinBtns.Controls.Add(b);
+        }
+        _cabin.Visible = true;
+        Log($"Cabin call from seat {req["seat"]}: {req["message"]}");
+        System.Media.SystemSounds.Asterisk.Play();
+        if (WindowState == FormWindowState.Minimized) FlashTitle();
+    }
+
+    void FlashTitle()
+    {
+        var t = new System.Windows.Forms.Timer { Interval = 700 };
+        int n = 0; var title = Text;
+        t.Tick += (_, _) => { Text = n % 2 == 0 ? "● Cabin call" : title; if (++n > 10 || WindowState != FormWindowState.Minimized) { Text = title; t.Stop(); t.Dispose(); } };
+        t.Start();
     }
 
     async Task FileReport()
