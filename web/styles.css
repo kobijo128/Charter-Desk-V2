@@ -365,3 +365,36 @@ table.crewtab .sel{max-width:130px}
 .shopcathd{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
 .shopcathd h3{margin:0}
 .shopcathd span{font-size:12px}
+
+/* flight report scorecard */
+.rh{margin:14px 0 8px;font:600 11px/1.2 var(--f-body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.scard{display:grid;grid-template-columns:auto 1fr;gap:18px;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface2)}
+@media (max-width:640px){.scard{grid-template-columns:1fr}}
+.rings{display:flex;flex-direction:column;align-items:center;gap:12px}
+@media (max-width:640px){.rings{flex-direction:row;justify-content:center;flex-wrap:wrap}}
+.ring{--c:var(--muted);width:92px;height:92px;border-radius:50%;display:grid;place-content:center;text-align:center;position:relative;
+  background:conic-gradient(var(--c) calc(var(--v) * 1%), var(--line) 0)}
+.ring::before{content:"";position:absolute;inset:8px;border-radius:50%;background:var(--surface2)}
+.ring b,.ring span{position:relative}
+.ring b{font:700 24px/1 var(--f-mono)}
+.ring span{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:3px}
+.ring.good{--c:var(--ok)}.ring.mid{--c:var(--warn)}.ring.low{--c:var(--bad)}
+.pts{text-align:center}.pts b{display:block;font:700 22px/1.1 var(--f-mono);color:var(--brass)}.pts span{font-size:11px;color:var(--muted)}
+.kv span.warnc{color:var(--warn)}
+.score{display:inline-block;font:600 11px/1 var(--f-mono);padding:3px 6px;border-radius:5px;background:var(--surface2);border:1px solid var(--line)}
+.score.good{color:var(--ok);background:var(--ok-bg);border-color:transparent}
+.score.mid{color:var(--warn);background:var(--warn-bg);border-color:transparent}
+.score.low{color:var(--bad);background:var(--bad-bg);border-color:transparent}
+.comfort{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 18px;font-size:13px}
+.comfort li{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dashed var(--line);padding:4px 0}
+.comfort b{font-family:var(--f-mono);font-weight:500}
+.rwy{width:100%;height:auto;margin-top:12px;display:block}
+.rwy-surf{fill:#2E3440;stroke:var(--line-strong)}
+.rwy-disp{fill:rgba(255,255,255,.1)}
+.rwy-tdz{fill:rgba(212,176,106,.22)}
+.rwy-cl{stroke:#F3F5F8;stroke-width:1.4;stroke-dasharray:9 7}
+.rwy-band{fill:rgba(212,176,106,.35)}
+.rwy-td{fill:var(--brass-light);stroke:#0E1A2B;stroke-width:2}
+.rwy-t{font:600 10px var(--f-mono);fill:var(--muted)}
+.mystats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px 18px}
+.mystats small{display:block;font-size:11.5px;margin-top:2px}

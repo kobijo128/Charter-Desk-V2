@@ -928,30 +928,75 @@ setInterval(() => refreshLive(false).catch(() => { }), 15000);
 
 /* ---------- reports and pilots ---------- */
 async function renderReports() {
-  const rows = await q(sb.from('pireps').select('id,status,landing_fpm,block_h,net,created_at,arr_icao,trips(flt,from_icao,to_icao,kind),pilots(callsign)').order('id', { ascending: false }).limit(60));
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Flight reports</h2><p>The latest flights across the VA. Select one to see its track and checks.</p></div></div>
-  <div class="panel tablewrap"><table class="grid"><thead><tr><th>Filed</th><th>Pilot</th><th>Flight</th><th>Route</th><th>Block</th><th>Landing</th><th>Status</th></tr></thead><tbody>
-  ${rows.length ? rows.map(p => `<tr class="click" data-act="pirep" data-id="${p.id}"><td class="n">${fmtDate(p.created_at)}</td><td class="n">${esc(p.pilots?.callsign)}</td><td class="n">${esc(p.trips?.flt)}${p.trips?.kind === 'ferry' ? ' <span class="tag ferry">Pos</span>' : ''}</td><td class="n">${p.trips?.from_icao} → ${p.arr_icao}</td><td class="n">${hm(p.block_h)}</td><td class="n">${p.landing_fpm ?? '—'} fpm</td><td><span class="tag ${p.status}">${p.status}</span></td></tr>`).join('') : '<tr><td colspan="7" class="muted">No flights filed yet.</td></tr>'}
+  const [rows, mine] = await Promise.all([
+    q(sb.from('pireps').select('id,status,landing_fpm,block_h,net,created_at,arr_icao,landing_score,comfort_score,points,trips(flt,from_icao,to_icao,kind),pilots(callsign)').order('id', { ascending: false }).limit(60)),
+    q(sb.from('pireps').select('landing_fpm,landing_g,block_h,air_h,landing_score,comfort_score,points,status,stats').eq('pilot_id', D.uid).limit(5000)).then(r => r.filter(x => x.status !== 'rejected'))]);
+  const acc = mine.filter(r => r.status === 'accepted'), avg = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  const fpms = mine.map(r => r.landing_fpm).filter(v => v != null), ls = mine.map(r => r.landing_score).filter(v => v != null), cs = mine.map(r => r.comfort_score).filter(v => v != null);
+  const cls = mine.map(r => r.stats?.touchdown?.cl_m).filter(v => v != null).map(Math.abs);
+  const best = fpms.length ? Math.min(...fpms.filter(v => v >= 30).concat(fpms.length && fpms.every(v => v < 30) ? fpms : [])) : null;
+  const tile = (l, v, sub) => `<div class="kv"><label>${l}</label><span>${v}</span>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Your flying</h2><p>From your filed reports. Points come from landing and comfort scores, added when a report is accepted.</p></div></div>
+  <div class="panel stats mystats">
+   ${tile('Points', (D.me.points || 0).toLocaleString('en-US'), `${acc.length} accepted flight${acc.length === 1 ? '' : 's'}`)}
+   ${tile('Hours', hm(mine.reduce((a, r) => a + (+r.block_h || 0), 0)), `air ${hm(mine.reduce((a, r) => a + (+r.air_h || 0), 0))}`)}
+   ${tile('Average landing', fpms.length ? Math.round(avg(fpms)) + ' fpm' : '—', best != null ? `best ${best} fpm` : '')}
+   ${tile('Landing score', ls.length ? Math.round(avg(ls)) : '—', ls.length ? `${ls.filter(v => v >= 90).length} greasers (90+)` : 'from tracker 0.3')}
+   ${tile('Comfort score', cs.length ? Math.round(avg(cs)) : '—', cs.length ? `${cs.filter(v => v >= 90).length} smooth flights` : 'from tracker 0.3')}
+   ${tile('Centreline', cls.length ? avg(cls).toFixed(1) + ' m' : '—', cls.length ? 'average at touchdown' : 'needs runway data')}
+  </div></div>
+  <div class="section"><div class="sechead"><div><h2>Flight reports</h2><p>The latest flights across the VA. Select one for the full report: times, landing analysis, comfort and track.</p></div></div>
+  <div class="panel tablewrap"><table class="grid"><thead><tr><th>Filed</th><th>Pilot</th><th>Flight</th><th>Route</th><th>Block</th><th>Landing</th><th>Scores</th><th>Points</th><th>Status</th></tr></thead><tbody>
+  ${rows.length ? rows.map(p => `<tr class="click" data-act="pirep" data-id="${p.id}"><td class="n">${fmtDate(p.created_at)}</td><td class="n">${esc(p.pilots?.callsign)}</td><td class="n">${esc(p.trips?.flt)}${p.trips?.kind === 'ferry' ? ' <span class="tag ferry">Pos</span>' : ''}</td><td class="n">${p.trips?.from_icao} → ${p.arr_icao}</td><td class="n">${hm(p.block_h)}</td><td class="n">${p.landing_fpm ?? '—'} fpm</td><td class="n">${scoreChip(p.landing_score, 'L')} ${scoreChip(p.comfort_score, 'C')}</td><td class="n">${p.points != null ? p.points : '—'}</td><td><span class="tag ${p.status}">${p.status}</span></td></tr>`).join('') : '<tr><td colspan="9" class="muted">No flights filed yet.</td></tr>'}
   </tbody></table></div></div>`;
+}
+const scoreClass = v => v == null ? '' : v >= 85 ? 'good' : v >= 60 ? 'mid' : 'low';
+const scoreChip = (v, l) => v == null ? '<span class="muted">—</span>' : `<span class="score ${scoreClass(v)}" title="${l === 'L' ? 'Landing' : 'Comfort'} score">${l} ${v}</span>`;
+const scoreRingHtml = (v, label) => `<div class="ring ${scoreClass(v)}" style="--v:${v ?? 0}"><b>${v ?? '—'}</b><span>${label}</span></div>`;
+const zt = v => v ? new Date(v).toISOString().slice(11, 16) + 'Z' : '—';
+const mins = m => m == null ? '—' : `${Math.round(m)} min`;
+// a plan view of the runway with the touchdown point, the touchdown zone and the centreline offset
+function runwaySvg(td) {
+  if (!td || !td.length_ft) return '';
+  const L = td.length_ft, W = Math.max(60, td.width_ft || 100), sx = 560 / L, h = 54, cy = 40;
+  const x = v => 20 + Math.max(-300, Math.min(L + 200, v + (td.disp_ft || 0))) * sx;
+  const yOff = m => cy + Math.max(-1.6, Math.min(1.6, (m * 3.28084) / (W / 2))) * (h / 2);
+  const tz0 = x(500), tz1 = x(2500);
+  return `<svg class="rwy" viewBox="0 0 600 84" role="img" aria-label="Runway ${esc(td.runway)} plan view with the touchdown point">
+   <rect x="20" y="${cy - h / 2}" width="${L * sx}" height="${h}" rx="3" class="rwy-surf"/>
+   ${td.disp_ft ? `<rect x="20" y="${cy - h / 2}" width="${td.disp_ft * sx}" height="${h}" class="rwy-disp"/>` : ''}
+   <rect x="${tz0}" y="${cy - h / 2}" width="${Math.max(0, tz1 - tz0)}" height="${h}" class="rwy-tdz"/>
+   <line x1="22" x2="${20 + L * sx - 2}" y1="${cy}" y2="${cy}" class="rwy-cl"/>
+   ${td.cl_max_m != null ? `<rect x="${x(td.td_ft)}" y="${yOff(-td.cl_max_m)}" width="${Math.min(150, Math.max(4, (td.remaining_ft || 0) * sx * 0.25))}" height="${Math.max(1, yOff(td.cl_max_m) - yOff(-td.cl_max_m))}" class="rwy-band"/>` : ''}
+   <circle cx="${x(td.td_ft)}" cy="${yOff(-(td.cl_m || 0))}" r="5.5" class="rwy-td"/>
+   <text x="22" y="80" class="rwy-t">${esc(td.runway)}</text><text x="${20 + L * sx}" y="80" text-anchor="end" class="rwy-t">${esc(td.opposite || '')}</text>
+   <text x="${(tz0 + tz1) / 2}" y="10" text-anchor="middle" class="rwy-t">touchdown zone</text></svg>`;
 }
 async function openPirep(id, staff) {
   const p = await q(sb.from('pireps').select('*,trips(flt,from_icao,to_icao,kind,client,price,dist),pilots(callsign,name,company)').eq('id', id).single());
   const t = p.trips || {};
   const checkNames = { departure: 'Departure airport', arrival: 'Arrival airport', aircraft: 'Aircraft type', speed: 'Plausible speed', crash: 'No crash', slew: 'No slew', sim_rate: 'Normal sim rate', overspeed: 'No overspeed below 10,000 ft' };
   const checks = Object.entries(p.checks || {}).map(([k, v]) => `<span class="${v.ok ? 'check-ok' : 'check-bad'}">${v.ok ? '✓' : '✗'} ${checkNames[k] || k}${k === 'departure' || k === 'arrival' ? ` (${dist(v.nm)})` : ''}${k === 'sim_rate' && !v.ok ? ` ×${v.max}` : ''}${k === 'overspeed' && !v.ok ? ` ${v.seconds}s` : ''}</span>`).join('');
-  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Flight report" style="width:min(720px,100%)">
+  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Flight report" style="width:min(800px,100%)">
   <div><h3 style="margin:0 0 4px">${esc(t.flt)} · ${esc(p.pilots?.callsign)} · ${esc(p.pilots?.company)}</h3><div class="route">${t.from_icao}<i>▸</i>${p.arr_icao}${p.arr_icao !== t.to_icao ? ` <span class="muted" style="font-size:14px">planned ${t.to_icao}</span>` : ''}</div>
   <div class="muted" style="font-size:13px">${esc(p.sim || '')} · ${esc(p.aircraft_title || '')} · <span class="tag ${p.status}">${p.status}</span></div></div>
   <div class="pmap" id="pmap"></div>
+  ${scorecard(p)}
+  <h4 class="rh">Times</h4>
   <div class="grid4">
-   <div class="kv"><label>Block off</label><span>${new Date(p.block_off).toISOString().slice(11, 16)}Z</span></div>
-   <div class="kv"><label>Block on</label><span>${new Date(p.block_on).toISOString().slice(11, 16)}Z</span></div>
-   <div class="kv"><label>Block / air</label><span>${hm(p.block_h)} / ${p.air_h != null ? hm(p.air_h) : '—'}</span></div>
+   <div class="kv"><label>Block off</label><span>${zt(p.block_off)}</span></div>
+   <div class="kv"><label>Takeoff</label><span>${zt(p.takeoff)}</span></div>
+   <div class="kv"><label>Landing</label><span>${zt(p.landing)}</span></div>
+   <div class="kv"><label>Block on</label><span>${zt(p.block_on)}</span></div>
+   <div class="kv"><label>Block time</label><span>${hm(p.block_h)}</span></div>
+   <div class="kv"><label>Air time</label><span>${p.air_h != null ? hm(p.air_h) : '—'}</span></div>
+   <div class="kv"><label>Taxi out / in</label><span>${mins(p.stats?.taxi_out_min)} / ${mins(p.stats?.taxi_in_min)}</span></div>
    <div class="kv"><label>Distance flown</label><span>${dist(p.dist_flown)}</span></div>
-   <div class="kv"><label>Landing</label><span>${p.landing_fpm ?? '—'} fpm</span></div>
-   <div class="kv"><label>G / bounces</label><span>${p.landing_g ?? '—'} / ${p.bounces}</span></div>
+   <div class="kv"><label>Highest altitude</label><span>${p.stats?.max_alt_ft ? ft(p.stats.max_alt_ft) : '—'}</span></div>
    <div class="kv"><label>Fuel used</label><span>${wt(p.fuel_used_lb)}</span></div>
+   <div class="kv"><label>Fuel on blocks</label><span>${wt(p.fuel_on_block_lb)}</span></div>
    <div class="kv"><label>Net</label><span class="${(p.net || 0) >= 0 ? 'pos' : 'neg'}">${p.net == null ? '—' : money(p.net)}</span></div></div>
+  <h4 class="rh">Checks</h4>
   <div class="checks">${checks}</div>
   ${p.review_note ? `<div class="note">${esc(p.review_note)}</div>` : ''}
   ${staff && p.status === 'pending' ? `<div class="field"><label for="rvNote">Note to the pilot</label><input id="rvNote" maxlength="200" placeholder="e.g. Diverted for weather, accepted"></div>
@@ -966,14 +1011,45 @@ async function openPirep(id, staff) {
   const bounds = path.length > 1 ? path : (A && B ? [[A.lat, A.lon], [B.lat, B.lon]] : [[48, 4]]);
   m.fitBounds(bounds, { padding: [30, 30], maxZoom: 9 });
 }
+function scorecard(p) {
+  const st = p.stats || {}, td = st.touchdown || {}, c = st.comfort, fpm = p.landing_fpm;
+  const fpmCls = fpm == null ? '' : fpm <= 180 ? 'pos' : fpm <= 400 ? 'warnc' : 'neg';
+  const side = v => v == null ? '—' : `${Math.abs(v).toFixed(1)} m ${v > 0.05 ? 'right' : v < -0.05 ? 'left' : ''}`;
+  const tdTxt = td.td_ft == null ? '—' : td.td_ft < 0 ? `${Math.abs(td.td_ft).toLocaleString('en-US')} ft short` : `${td.td_ft.toLocaleString('en-US')} ft`;
+  const wind = td.wind_kt != null ? `${String(td.wind_dir ?? 0).padStart(3, '0')}° / ${td.wind_kt} kt` : '—';
+  const line = (label, secs, extra) => secs ? `<li><span>${label}</span><b>${Math.round(secs)} s${extra ? ` · ${extra}` : ''}</b></li>` : '';
+  const comfortList = c ? [
+    line('Noticeable G-forces', c.g_s, c.max_g ? `${c.min_g?.toFixed?.(2) ?? c.min_g}–${c.max_g?.toFixed?.(2) ?? c.max_g} g` : ''),
+    line('Banked past 30°', c.bank_s, c.max_bank ? `max ${Math.round(c.max_bank)}°` : ''),
+    line('Steep pitch', c.pitch_s),
+    line('Descending over 3,500 fpm', c.vs_s),
+    line('Taxiing over 30 kt', c.taxi_fast_s),
+    c.hard_brake_n ? `<li><span>Sharp stops while taxiing</span><b>${c.hard_brake_n}</b></li>` : ''].join('') : '';
+  return `<div class="scard">
+   <div class="rings">${scoreRingHtml(p.landing_score, "Landing")}${scoreRingHtml(p.comfort_score, "Comfort")}<div class="pts"><b>${p.points ?? '—'}</b><span>${p.status === 'accepted' ? 'points earned' : p.status === 'pending' ? 'points on acceptance' : 'points'}</span></div></div>
+   <div>
+    <h4 class="rh" style="margin-top:0">Landing${td.runway ? ` · runway ${esc(td.runway)}` : ''}</h4>
+    <div class="grid4">
+     <div class="kv"><label>Rate of descent</label><span class="${fpmCls}">${fpm ?? '—'} fpm</span></div>
+     <div class="kv"><label>G-force</label><span>${p.landing_g ?? '—'} g</span></div>
+     <div class="kv"><label>Bounces</label><span>${p.bounces}</span></div>
+     <div class="kv"><label>Speed at touchdown</label><span>${td.ias != null ? td.ias + ' kt' : '—'}</span></div>
+     <div class="kv"><label>Past threshold</label><span>${tdTxt}</span></div>
+     <div class="kv"><label>Centreline</label><span>${side(td.cl_m)}</span></div>
+     <div class="kv"><label>Max off centre</label><span>${td.cl_max_m != null ? td.cl_max_m.toFixed(1) + ' m' : '—'}</span></div>
+     <div class="kv"><label>Pitch / wind</label><span>${td.pitch != null ? td.pitch + '°' : '—'} · ${wind}</span></div></div>
+    ${td.length_ft ? runwaySvg(td) : `<p class="hint" style="margin:8px 0 0">${p.stats && p.stats.touchdown ? 'No runway data for this airport yet, so centreline and touchdown distance are not available.' : 'Fly with tracker 0.3 or later for runway, centreline and comfort analysis.'}</p>`}
+    ${c ? `<h4 class="rh">Comfort</h4>${comfortList ? `<ul class="comfort">${comfortList}</ul>` : '<p class="hint" style="margin:0">A smooth ride from start to finish: nothing the passengers noticed.</p>'}` : ''}
+   </div></div>`;
+}
 async function renderPilots() {
   const [pilots, reps] = await Promise.all([
-    q(sb.from('pilots').select('id,callsign,name,company,rep,cash,is_admin,created_at').order('rep', { ascending: false })),
-    q(sb.from('pireps').select('pilot_id,landing_fpm,block_h').eq('status', 'accepted').limit(10000))]);
-  const st = {}; reps.forEach(r => { const s = st[r.pilot_id] ||= { n: 0, h: 0, l: 0, ln: 0 }; s.n++; s.h += +r.block_h || 0; if (r.landing_fpm != null) { s.l += r.landing_fpm; s.ln++ } });
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Pilots</h2><p>Every company flying for ${esc(D.settings.va_name)}, ranked by reputation.</p></div></div>
-  <div class="panel tablewrap"><table class="grid"><thead><tr><th>#</th><th>Callsign</th><th>Pilot</th><th>Company</th><th>Reputation</th><th>Flights</th><th>Hours</th><th>Avg landing</th><th>Balance</th></tr></thead><tbody>
-  ${pilots.map((p, i) => { const s = st[p.id] || { n: 0, h: 0, ln: 0 }; return `<tr${p.id === D.uid ? ' style="background:var(--brass-bg)"' : ''}><td class="n">${i + 1}</td><td class="n">${esc(p.callsign)}${p.is_admin ? ' <span class="tag call">Staff</span>' : ''}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n">${Math.round(p.rep)}</td><td class="n">${s.n}</td><td class="n">${hm(s.h)}</td><td class="n">${s.ln ? Math.round(s.l / s.ln) + ' fpm' : '—'}</td><td class="n">${kmoney(p.cash)}</td></tr>` }).join('')}
+    q(sb.from('pilots').select('id,callsign,name,company,rep,cash,points,is_admin,created_at').order('points', { ascending: false })).then(r => r.sort((x, y) => (y.points || 0) - (x.points || 0) || y.rep - x.rep)),
+    q(sb.from('pireps').select('pilot_id,landing_fpm,block_h,landing_score,comfort_score').eq('status', 'accepted').limit(10000))]);
+  const st = {}; reps.forEach(r => { const s = st[r.pilot_id] ||= { n: 0, h: 0, l: 0, ln: 0, ls: 0, lsn: 0, cs: 0, csn: 0 }; s.n++; s.h += +r.block_h || 0; if (r.landing_fpm != null) { s.l += r.landing_fpm; s.ln++ } if (r.landing_score != null) { s.ls += r.landing_score; s.lsn++ } if (r.comfort_score != null) { s.cs += r.comfort_score; s.csn++ } });
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Pilots</h2><p>Every company flying for ${esc(D.settings.va_name)}, ranked by points. Pilots earn points for smooth, accurate flying: up to 100 for the landing and 100 for passenger comfort on every accepted flight.</p></div></div>
+  <div class="panel tablewrap"><table class="grid"><thead><tr><th>#</th><th>Callsign</th><th>Pilot</th><th>Company</th><th>Points</th><th>Flights</th><th>Hours</th><th>Avg landing</th><th>Scores</th><th>Reputation</th><th>Balance</th></tr></thead><tbody>
+  ${pilots.map((p, i) => { const s = st[p.id] || { n: 0, h: 0, ln: 0, lsn: 0, csn: 0 }; return `<tr${p.id === D.uid ? ' style="background:var(--brass-bg)"' : ''}><td class="n">${i + 1}</td><td class="n">${esc(p.callsign)}${p.is_admin ? ' <span class="tag call">Staff</span>' : ''}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n"><b>${(p.points || 0).toLocaleString('en-US')}</b></td><td class="n">${s.n}</td><td class="n">${hm(s.h)}</td><td class="n">${s.ln ? Math.round(s.l / s.ln) + ' fpm' : '—'}</td><td class="n">${scoreChip(s.lsn ? Math.round(s.ls / s.lsn) : null, 'L')} ${scoreChip(s.csn ? Math.round(s.cs / s.csn) : null, 'C')}</td><td class="n">${Math.round(p.rep)}</td><td class="n">${kmoney(p.cash)}</td></tr>` }).join('')}
   </tbody></table></div></div>`;
 }
 
@@ -1021,11 +1097,23 @@ async function renderStaff() {
   <div class="section"><div class="sechead"><div><h2>Airports</h2><p>${D.apList.length.toLocaleString('en-US')} active airports feed the request board. The worldwide list comes from OurAirports (public domain); refresh it to pick up any runway or position changes. Paste CSV rows to add or update many at once: ICAO, name, city, country, latitude, longitude, tags (biz, leisure, ski, long, separated by spaces).</p></div></div>
    <form class="panel" id="apForm" style="display:flex;flex-direction:column;gap:10px"><textarea class="ta" id="apCsv" placeholder="LFKC,Calvi Sainte-Catherine,Calvi,FR,42.5308,8.7933,leisure"></textarea><div class="btns"><button class="btn pri" type="submit">Import airports</button><button class="btn" type="button" id="apWorld">Refresh the worldwide list</button></div><div class="err" id="apErr"></div></form></div>
 
+  <div class="section"><div class="sechead"><div><h2>Runways</h2><p>Runway threshold positions let flight reports show the runway used, touchdown distance past the threshold and centreline accuracy. <b id="rwCount">Checking…</b></p></div></div>
+   <div class="panel" style="display:flex;flex-direction:column;gap:10px"><div class="btns"><button class="btn pri" type="button" id="rwLoad">Load runway data</button></div><div class="err" id="rwErr"></div></div></div>
+
   <div class="section"><h2>Pilots</h2><div class="panel tablewrap"><table class="grid"><thead><tr><th>Callsign</th><th>Name</th><th>Company</th><th>Balance</th><th>Rep</th><th>Staff</th><th>Adjust</th></tr></thead><tbody>
   ${pilots.map(p => `<tr><td class="n">${esc(p.callsign)}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n">${money(p.cash)}</td><td class="n">${Math.round(p.rep)}</td>
    <td><label class="check"><input type="checkbox" data-act="staff" data-id="${p.id}" ${p.is_admin ? 'checked' : ''} ${p.id === D.uid ? 'disabled' : ''}> Staff</label></td>
    <td><button type="button" class="btn" data-act="adjust" data-id="${p.id}" data-cs="${esc(p.callsign)}">Adjust</button></td></tr>`).join('')}</tbody></table></div></div>`;
   $('#setForm').onsubmit = async e => { e.preventDefault(); await act(async () => { await rpc('admin_settings', { p_va_name: $('#sName').value, p_timezone: $('#sTz').value, p_start_cash: +$('#sCash').value, p_market_base: +$('#sBase').value, p_auto_accept: $('#sAuto').checked }); await loadStatic() }, 'Settings saved.') };
+  sb.from('runways').select('icao', { count: 'exact', head: true }).then(({ count }) => { $('#rwCount') && ($('#rwCount').textContent = count ? `${count.toLocaleString('en-US')} runways loaded.` : 'No runway data loaded yet.') });
+  $('#rwLoad').onclick = async () => {
+    $('#rwErr').textContent = 'Loading runway data…';
+    try {
+      const rows = await fetch('data/runways.json').then(r => { if (!r.ok) throw new Error('Couldn\'t load data/runways.json'); return r.json() });
+      let n = 0; for (let i = 0; i < rows.length; i += 1000) { n += await rpc('admin_import_runways', { p_rows: rows.slice(i, i + 1000) }); $('#rwErr').textContent = `Imported ${n.toLocaleString('en-US')} of ${rows.length.toLocaleString('en-US')}…` }
+      $('#rwErr').textContent = ''; $('#rwCount').textContent = `${n.toLocaleString('en-US')} runways loaded.`; toast(`Runway data loaded: ${n.toLocaleString('en-US')} runways.`, 'ok');
+    } catch (err) { $('#rwErr').textContent = err.message }
+  };
   $('#apWorld').onclick = async () => {
     $('#apErr').textContent = 'Loading the worldwide list…';
     try {
