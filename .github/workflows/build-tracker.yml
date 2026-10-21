@@ -35,6 +35,18 @@ jobs:
         with:
           name: tracker-screenshot
           path: tracker-screenshot.png
+      - name: Keep the screenshot on the ci-screens branch (test builds only)
+        if: github.ref != 'refs/heads/main'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          Copy-Item tracker-screenshot.png $env:RUNNER_TEMP/shot.png
+          git fetch origin ci-screens 2>$null
+          if ($LASTEXITCODE -eq 0) { git checkout -B ci-screens origin/ci-screens } else { git checkout --orphan ci-screens; git rm -rf . -q }
+          Copy-Item $env:RUNNER_TEMP/shot.png tracker-screenshot.png -Force
+          git add tracker-screenshot.png
+          git commit -m "Tracker screenshot from $env:GITHUB_SHA" --allow-empty -q
+          git push -f origin ci-screens -q
       - name: Publish as the latest release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
