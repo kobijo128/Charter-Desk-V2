@@ -113,7 +113,7 @@ end $$;
 
 -- with airports worldwide, most new requests start near where pilots' aircraft are
 create or replace function public.maintain()
-returns void language plpgsql as $$
+returns void language plpgsql set search_path = public as $$
 declare s public.va_settings; rq record; tgt int; open_n int; active_n int; near text; tr record; h int; gap interval;
 begin
   if not pg_try_advisory_xact_lock(424242) then return; end if;
