@@ -122,6 +122,18 @@ function quote(ac, r, from) {
   const rate = t.rate * rmul(ac.year);
   return { loc, repoNm, bh, rh, basis: rate * bh, guide: Math.round(rate * bh / 100) * 100, repoCost: Math.round(opRate(t) * rh * repoFactor()), fair: Math.round((rate * bh + 0.55 * rate * rh) / 100) * 100, opc: Math.round(opRate(t) * (bh + rh * repoFactor())) };
 }
+const TURN_H = 0.5;
+// when the aircraft is free: now, or after the last booked leg plus a turnaround
+function freeAt(ac) {
+  const qd = queue(ac); if (!qd.length) return Date.now();
+  const l = qd[qd.length - 1], end = ts(l.dep_at) + (l.kind === 'ferry' ? 0 : blockH(typeOf(ac), l.dist)) * 36e5;
+  return Math.max(Date.now(), end + TURN_H * 36e5);
+}
+// when you must leave to make the departure, counting any positioning leg
+function timing(ac, r, qd) {
+  const free = freeAt(ac), leave = ts(r.dep_at) - (qd.repoNm ? (qd.rh + TURN_H) * 36e5 : 0);
+  return { free, leave, busy: free > Date.now() + 6e4, late: leave < free - 5 * 6e4, soon: leave - free < 2.5 * 36e5 };
+}
 function winOdds(r, ac, amount) {
   const qd = quote(ac, r), t = typeOf(ac), cl = D.clients.find(c => c.name === r.client) || { bud_lo: 0.95, bud_hi: 1.2 };
   const rep = D.me.rep, repF = 1 + (rep - 50) / 400, edge = 1 - 0.03 * upg('broker');
@@ -439,7 +451,7 @@ const inBand = h => { if (UI.band === 'any') return true; const [a, b] = UI.band
 function renderMarket() {
   const ac = active(); if (!ac) { $('#main').innerHTML = `<div class="panel empty">${D.fleet.length ? 'All your aircraft are flown by crew. Take one back on the <a href="#crew" data-tab="crew">Crew</a> page to quote yourself.' : 'You have no aircraft. Add one in the Shop.'}</div>`; return }
   const t = typeOf(ac);
-  let list = D.requests.map(r => ({ r, ok: fits(t, r), q: quote(ac, r) })).filter(x => inBand(blockH(t, x.r.dist)));
+  let list = D.requests.map(r => { const q = quote(ac, r), tm = timing(ac, r, q); return { r, ok: fits(t, r) && !tm.late, q, tm } }).filter(x => inBand(blockH(t, x.r.dist)));
   const hidden = list.filter(x => !x.ok).length;
   if (!UI.showAll) list = list.filter(x => x.ok);
   const far = list.filter(x => x.q.repoNm > NEAR_NM).length;
@@ -473,20 +485,25 @@ function renderMarket() {
   updateCountdowns();
   SEEN_READY = true;
 }
+function goNow(qd, tm, r) {
+  const leaveIn = tm.leave - Date.now();
+  if (qd.repoNm) return leaveIn < 5 * 6e4 ? `Go now · position to ${r.from_icao} now` : `Go now · leave ${qd.loc} in ${relTime(tm.leave)}`;
+  return tm.busy ? `Back-to-back · departs in ${relTime(r.dep_at)}` : `Go now · in ${relTime(r.dep_at)}`;
+}
 const SEEN_JOBS = new Set(); let SEEN_READY = false;
-function strip({ r, ok, q: qd }, ac) {
+function strip({ r, ok, q: qd, tm }, ac) {
   const t = typeOf(ac), bid = D.bids.find(b => b.request_id === r.id), A = D.airports[r.from_icao] || {}, B = D.airports[r.to_icao] || {};
   const deciding = r.status === 'deciding';
   let act;
-  if (!ok) act = `<span class="why">${esc(whyNot(t, r))}</span>`;
+  if (!ok) act = `<span class="why">${esc(whyNot(t, r) || (qd.repoNm ? 'Can\'t position in time' : `${ac.reg} busy until ${fmtDep(new Date(tm.free).toISOString(), qd.loc)}`))}</span>`;
   else if (bid) act = `<span class="placed">Bid ${kmoney(bid.amount)}</span><span class="cd">decision <span data-cd="${ts(r.decide_at)}"></span></span>`;
   else act = `<button type="button" data-act="bid" data-id="${r.id}">Quote</button><span class="cd">${deciding ? `deciding <span data-cd="${ts(r.decide_at)}"></span>` : `closes <span data-cd="${ts(r.expires_at)}"></span>`}</span>`;
   const fresh = !SEEN_JOBS.has(r.id); SEEN_JOBS.add(r.id);
   return `<article class="job cat-${r.cat} ${ok ? '' : 'na'} ${fresh && SEEN_READY ? 'fresh' : ''}">
   <div class="where"><span class="cities">${esc(A.city || r.from_icao)} <i>to</i> ${esc(B.city || r.to_icao)}</span>
    <span class="sub"><b>${r.from_icao} – ${r.to_icao}</b> · ${esc(r.client)} · ${r.pax} passenger${r.pax > 1 ? 's' : ''} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span>
-   ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first</span>` : ''}</div>
-  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at, r.from_icao)}</b>${ts(r.dep_at) - Date.now() < 2.5 * 36e5 ? `<em class="gonow">Go now · in ${relTime(r.dep_at)}</em>` : ''}</span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
+   ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first · leave by ${fmtDep(new Date(tm.leave).toISOString(), qd.loc)}</span>` : ''}</div>
+  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at, r.from_icao)}</b>${ok && tm.soon ? `<em class="gonow">${goNow(qd, tm, r)}</em>` : ''}</span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
   <div class="act">${act}</div></article>`;
 }
 
@@ -1018,11 +1035,11 @@ async function renderStaff() {
 
 /* ---------- quote modal ---------- */
 function openBid(r) {
-  const ac = active(), qd = quote(ac, r);
+  const ac = active(), qd = quote(ac, r), tm = timing(ac, r, qd);
   $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Quote for request">
   <div><h3 style="margin:0 0 4px">Quote · REQ ${r.id} · ${esc(r.client)}</h3><div class="route">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="muted" style="font-size:13px">${esc(D.airports[r.from_icao]?.city)} to ${esc(D.airports[r.to_icao]?.city)} · ${r.pax} pax · departs ${fmtDep(r.dep_at, r.from_icao)}</div></div>
   <div class="grid4"><div class="kv"><label>Aircraft</label><span>${ac.reg}</span></div><div class="kv"><label>Block</label><span>${hm(qd.bh)}</span></div>
-   <div class="kv"><label>Positioning</label><span>${qd.repoNm ? `${dist(qd.repoNm)} · ${kmoney(qd.repoCost)}` : 'None'}</span></div><div class="kv"><label>Op. cost</label><span>${kmoney(qd.opc)}</span></div></div>
+   <div class="kv"><label>Positioning</label><span>${qd.repoNm ? `${dist(qd.repoNm)} · ${kmoney(qd.repoCost)} · leave ${qd.loc} by ${fmtDep(new Date(tm.leave).toISOString(), qd.loc)}` : 'None'}</span></div><div class="kv"><label>Op. cost</label><span>${kmoney(qd.opc)}</span></div></div>
   <div class="field"><label for="bidAmt">Your price (${pref('currency')})</label><div class="amount"><span>${cur().sym}</span><input id="bidAmt" inputmode="numeric" value="${Math.round(toLocal(qd.guide) / 100) * 100}"></div>
    <input type="range" id="bidRange" min="${Math.round(toLocal(qd.guide) * 0.6 / 100) * 100}" max="${Math.round(toLocal(qd.fair) * 1.6 / 100) * 100}" step="100" value="${Math.round(toLocal(qd.guide) / 100) * 100}" aria-label="Adjust price">
    <div style="display:flex;justify-content:space-between;font-size:11.5px;flex-wrap:wrap;gap:6px" class="muted mono"><span>Market rate ${kmoney(qd.guide * 0.95)}–${kmoney(qd.guide * 1.1)}${qd.repoNm ? `; outside operators may not need to position` : ''}</span><span>${r.npc} outside operators${r.player_bids ? ` + ${r.player_bids} VA pilot${r.player_bids > 1 ? 's' : ''}` : ''}</span></div></div>
