@@ -2,6 +2,7 @@ name: Build tracker
 
 on:
   push:
+    branches: [main, 'test/**']
     paths: ['tracker/**', '.github/workflows/build-tracker.yml']
   workflow_dispatch:
 

@@ -61,7 +61,7 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
 const D = { settings: {}, airports: {}, apList: [], types: {}, clients: [], me: null, fleet: [], requests: [], bids: [], calls: [], trips: [], myPireps: [] };
 const UI = { tab: 'market', band: 'any', showAll: false, nearOnly: true, sort: 'closing', acId: null, sound: false };
 const NEAR_NM = 800;
-const TABS = [['market', 'Market'], ['trips', 'Trips'], ['hangar', 'Hangar'], ['shop', 'Shop'], ['live', 'Live map'], ['reports', 'Reports'], ['pilots', 'Pilots'], ['ledger', 'Ledger'], ['profile', 'Profile'], ['staff', 'Staff']];
+const TABS = [['market', 'Market'], ['trips', 'Trips'], ['hangar', 'Hangar'], ['crew', 'Crew'], ['shop', 'Shop'], ['live', 'Live map'], ['reports', 'Reports'], ['pilots', 'Pilots'], ['ledger', 'Ledger'], ['profile', 'Profile'], ['staff', 'Staff']];
 try { UI.sound = localStorage.getItem('cd-ringer') === '1'; } catch (e) { }
 let pollTimer = null, liveMap = null, liveLayer = null;
 
@@ -82,7 +82,11 @@ function nm(a, b) { const A = D.airports[a], B = D.airports[b]; return A && B ? 
 function brg(a, b) { const A = D.airports[a], B = D.airports[b]; const y = Math.sin((B.lon - A.lon) * R) * Math.cos(B.lat * R); const x = Math.cos(A.lat * R) * Math.sin(B.lat * R) - Math.sin(A.lat * R) * Math.cos(B.lat * R) * Math.cos((B.lon - A.lon) * R); return (Math.atan2(y, x) / R + 360) % 360 }
 const blockH = (t, d) => d <= 0 ? 0 : d / t.ktas + 0.33;
 const upg = k => (D.me?.upgrades || {})[k] || 0;
-const opRate = t => t.rate * 0.55 * (1 - 0.05 * upg('crew'));
+const opRate = (t, ac) => t.rate * (ac ? +ac.op_mul || 1 : 1) * 0.55 * (1 - 0.05 * upg('crew'));
+const earnRate = (t, ac) => t.rate * (ac ? +ac.rate_mul || 1 : 1);
+const thisYear = () => new Date().getUTCFullYear();
+const acAge = y => Math.max(0, thisYear() - (y || thisYear()));
+const acValue = (price, y) => acAge(y) === 0 ? price : Math.max(price * 0.22, price * 0.85 * Math.pow(0.94, acAge(y) - 1));
 const repoFactor = () => 1 - 0.25 * upg('empty');
 const rwy = icao => D.airports[icao]?.rwy_ft ?? 6000;
 const rwyOk = (t, r) => rwy(r.from_icao) >= t.min_rwy_ft && rwy(r.to_icao) >= t.min_rwy_ft;
@@ -93,12 +97,14 @@ const acById = id => D.fleet.find(a => a.id === id);
 const typeOf = ac => D.types[ac.type_code];
 const queue = ac => D.trips.filter(t => t.aircraft_id === ac.id && (t.status === 'booked' || t.status === 'flying')).sort((a, b) => a.seq - b.seq);
 const futureLoc = ac => { const qd = queue(ac); return qd.length ? qd[qd.length - 1].to_icao : ac.loc };
-const active = () => acById(UI.acId) || D.fleet[0];
+const ownFleet = () => D.fleet.filter(a => a.ops_mode !== 'crew');
+const active = () => { const a = acById(UI.acId); return a && a.ops_mode !== 'crew' ? a : ownFleet()[0] || D.fleet[0] };
 function quote(ac, r, from) {
   const t = typeOf(ac), loc = from || futureLoc(ac);
   const repoNm = loc === r.from_icao ? 0 : nm(loc, r.from_icao);
   const bh = blockH(t, r.dist), rh = blockH(t, repoNm);
-  return { loc, repoNm, bh, rh, basis: t.rate * bh, guide: Math.round(t.rate * bh / 100) * 100, repoCost: Math.round(opRate(t) * rh * repoFactor()), fair: Math.round((t.rate * bh + 0.55 * t.rate * rh) / 100) * 100, opc: Math.round(opRate(t) * (bh + rh * repoFactor())) };
+  const er = earnRate(t, ac);
+  return { loc, repoNm, bh, rh, basis: er * bh, guide: Math.round(er * bh / 100) * 100, repoCost: Math.round(opRate(t, ac) * rh * repoFactor()), fair: Math.round((er * bh + 0.55 * t.rate * rh) / 100) * 100, opc: Math.round(opRate(t, ac) * (bh + rh * repoFactor())) };
 }
 function winOdds(r, ac, amount) {
   const qd = quote(ac, r), t = typeOf(ac), cl = D.clients.find(c => c.name === r.client) || { bud_lo: 0.95, bud_hi: 1.2 };
@@ -124,7 +130,7 @@ function plan(trip) {
   const from = prevLoc(trip), qd = quote(ac, r, trip.from_icao);
   const [alt, altd] = alternate(trip.to_icao);
   const tripFuel = Math.round(t.burn * (trip.dist / t.ktas) + t.burn * 0.25), altFuel = Math.round(t.burn * (altd / t.ktas + 0.15)), res = Math.round(t.burn * 0.75), taxi = Math.round(t.burn * 0.08);
-  return { ac, t, from, bh: qd.bh, opc: Math.round(opRate(t) * qd.bh * (trip.kind === 'ferry' ? repoFactor() : 1)), alt, altd, fl: cruiseFL(t, trip.from_icao, trip.to_icao, trip.dist), tripFuel, altFuel, res, taxi, block: tripFuel + altFuel + res + taxi, payload: trip.pax * 230 };
+  return { ac, t, from, bh: qd.bh, opc: Math.round(opRate(t, ac) * qd.bh * (trip.kind === 'ferry' ? repoFactor() : 1)), alt, altd, fl: cruiseFL(t, trip.from_icao, trip.to_icao, trip.dist), tripFuel, altFuel, res, taxi, block: tripFuel + altFuel + res + taxi, payload: trip.pax * 230 };
 }
 
 /* ---------- time ---------- */
@@ -171,7 +177,7 @@ async function boot() {
 }
 async function loadAirports() {
   // Supabase returns at most 1,000 rows per request, so fetch the list in pages
-  const cols = 'icao,name,city,country,lat,lon,tags,active,size,rwy_ft';
+  const cols = 'icao,name,city,country,lat,lon,tags,active,size,rwy_ft,tz';
   const first = await sb.from('airports').select(cols, { count: 'exact' }).order('icao').range(0, 999);
   if (first.error) throw new Error(first.error.message);
   const pages = Math.ceil((first.count || 0) / 1000), rest = [];
@@ -208,9 +214,10 @@ async function doPoll() {
   try {
     const res = await rpc('poll');
     for (const e of (res.events || [])) toast(e.won ? `Won: ${e.client}, ${e.route} at ${money(e.amount)}. It's in your trips.` : `Lost ${e.route}. ${e.note}`, e.won ? 'ok' : 'bad');
+    D.cabin = res.cabin || [];
     await refreshCore();
-    renderHeader(); renderCall();
-    if (['market', 'trips'].includes(UI.tab) && !$('#modal').children.length) renderTabSafe();
+    renderHeader(); renderCall(); renderCabin();
+    if ((UI.tab === 'market' || (UI.tab === 'trips' && !UI.plan)) && !$('#modal').children.length) renderTabSafe();
   } catch (e) { console.warn(e) }
   polling = false;
 }
@@ -261,7 +268,7 @@ async function renderOnboarding() {
   PREFS_OVERRIDE = startPrefs;
   const opts = D.apList.map(a => `<option value="${a.icao}">${esc(a.city)} · ${esc(a.name)}</option>`).join('');
   $('#main').innerHTML = `<div class="authwrap"><form class="authcard wide" id="obForm" novalidate>
-    <div><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and one aircraft of your choice at your home base.</p></div>
+    <div><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and a second-hand aircraft of your choice, about 14 years old and paid for, at your home base.</p></div>
     <h3 class="obh">1 · Pilot and company</h3>
     <div class="row2"><div class="field"><label for="obCs">Pilot callsign</label><input id="obCs" maxlength="8" placeholder="ALT001" autocomplete="off"></div>
     <div class="field"><label for="obName">Your name</label><input id="obName" maxlength="40" autocomplete="name"></div></div>
@@ -325,7 +332,14 @@ function renderHeader() {
   $('#tabs').innerHTML = TABS.filter(t => t[0] !== 'staff' || D.me.is_admin).map(([k, l]) =>
     `<a href="#${k}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}${counts[k] ? `<span class="ct">${counts[k]}</span>` : ''}</a>`).join('');
 }
-function clock() { const d = shift(Date.now()); $('#gClock').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${utc() ? 'Z' : ''}`; $('#gClockLabel').textContent = utc() ? 'UTC' : 'Local time' }
+function tzTime(tz) { try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()) } catch (e) { return '—' } }
+function clock() {
+  const n = new Date(); $('#gUtc').textContent = `${pad(n.getUTCHours())}:${pad(n.getUTCMinutes())}:${pad(n.getUTCSeconds())}Z`;
+  const ac = D.fleet && active(); const ap = ac && D.airports[ac.loc];
+  $('#gLocalLabel').textContent = ap ? `Local · ${ap.icao}` : 'Local time';
+  $('#gLocal').textContent = ap ? tzTime(ap.tz || 'UTC') : tzTime(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  $('#gLocal').title = ap ? `${ap.city} (${ap.tz}), where ${ac.reg} is` : '';
+}
 function updateCountdowns() {
   const now = Date.now();
   document.querySelectorAll('[data-cd]').forEach(e => e.textContent = mmss(+e.dataset.cd - now));
@@ -336,7 +350,7 @@ function renderCall() {
   if ($('#call').dataset.id === String(c.id)) return;
   $('#call').dataset.id = c.id;
   const A = D.airports[c.from_icao], B = D.airports[c.to_icao];
-  const el = D.fleet.filter(a => fits(typeOf(a), c));
+  const el = ownFleet().filter(a => fits(typeOf(a), c));
   const initials = c.caller.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
   $('#call').innerHTML = `<div class="callcard" role="alertdialog" aria-label="Incoming call from ${esc(c.caller)}">
   <span class="lbl">CHARTER DESK FS · INCOMING CALL</span>
@@ -357,7 +371,7 @@ function renderCall() {
 function renderAll() { renderHeader(); renderCall(); renderTab() }
 function renderTabSafe() { const ae = document.activeElement; if (ae && $('#main').contains(ae) && ae.matches('input,select,textarea')) return; renderTab() }
 function renderTab() {
-  const f = { market: renderMarket, trips: renderTrips, hangar: renderHangar, shop: renderShop, live: renderLive, reports: renderReports, pilots: renderPilots, ledger: renderLedger, profile: renderProfile, staff: renderStaff }[UI.tab] || renderMarket;
+  const f = { market: renderMarket, trips: renderTrips, hangar: renderHangar, crew: renderCrew, shop: renderShop, live: renderLive, reports: renderReports, pilots: renderPilots, ledger: renderLedger, profile: renderProfile, staff: renderStaff }[UI.tab] || renderMarket;
   Promise.resolve(f()).catch(e => { $('#main').innerHTML = `<div class="panel empty">Couldn't load this page: ${esc(e.message)}</div>` });
 }
 
@@ -366,6 +380,7 @@ const inBand = h => { if (UI.band === 'any') return true; const [a, b] = UI.band
 
 function renderMarket() {
   const ac = active(); if (!ac) { $('#main').innerHTML = '<div class="panel empty">You have no aircraft. Add one in the Shop.</div>'; return }
+  if (ac.ops_mode === 'crew') { $('#main').innerHTML = '<div class="panel empty">All your aircraft are with your crew. Take one back in the Hangar to quote for work yourself.<div style="margin-top:12px"><a class="btn pri" href="#hangar" data-tab="hangar">Open the Hangar</a></div></div>'; return }
   const t = typeOf(ac);
   let list = D.requests.map(r => ({ r, ok: fits(t, r), q: quote(ac, r) })).filter(x => inBand(blockH(t, x.r.dist)));
   const hidden = list.filter(x => !x.ok).length;
@@ -379,13 +394,13 @@ function renderMarket() {
   const pending = D.bids.filter(b => b.status === 'pending'), recent = D.bids.filter(b => b.status !== 'pending').slice(0, 7);
   $('#main').innerHTML = `<div class="market">
  <aside class="side">
-  <div class="panel"><h3>Bidding with</h3><div class="acpick">${D.fleet.map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${dist(tt.range_nm)}</em></button>` }).join('')}</div></div>
+  <div class="panel"><h3>Bidding with</h3><div class="acpick">${ownFleet().map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${dist(tt.range_nm)}</em></button>` }).join('')}</div></div>
   <div class="panel"><h3>Flight time</h3><div class="bands">${BANDS.map(([k, l]) => `<button type="button" class="chip" data-act="band" data-k="${k}" aria-pressed="${UI.band === k}">${l}</button>`).join('')}</div>
    <p class="muted" style="font-size:12px;margin:10px 0 0">Block time in the ${esc(t.name)}, including taxi and climb.</p></div>
   <div class="panel"><h3>${esc(t.name)}</h3><div class="specs">
    <div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div>
    <div><label>Seats</label><span>${t.seats}</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div>
-   <div><label>Op. cost</label><span>${kmoney(opRate(t))}/h</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div></div></div>
+   <div><label>Op. cost</label><span>${kmoney(opRate(t, ac))}/h</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div></div></div>
  </aside>
  <section style="min-width:0">
   <div class="boardhead"><div><h2>${h < 5 || h >= 18 ? 'Tonight’s' : h < 12 ? 'This morning’s' : 'This afternoon’s'} enquiries</h2><p>${mood} Every ${esc(D.settings.va_name)} pilot sees this board.</p></div>
@@ -416,13 +431,128 @@ function strip({ r, ok, q: qd }, ac) {
 }
 
 function renderTrips() {
+  if (UI.plan) { const tr = D.trips.find(t => t.id === UI.plan); if (tr) return renderPlan(tr); UI.plan = null }
+  return renderTripList();
+}
+function renderTripList() {
   const list = D.trips.slice().sort((a, b) => (a.aircraft_id || '').localeCompare(b.aircraft_id || '') || a.seq - b.seq);
   const reps = D.myPireps;
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Trips</h2><p>Fly each leg with the Charter Desk Tracker: load the aircraft at the departure gate, pick the booking in the tracker and press Start flight. The report files itself at block on.</p></div><a class="btn" href="#profile" data-tab="profile">Get the tracker</a></div>
+  $('#main').innerHTML = `<div id="deck"></div><div class="section"><div class="sechead"><div><h2>Trips</h2><p>Fly each leg with the Charter Desk Tracker: load the aircraft at the departure gate, pick the booking in the tracker and press Start flight. The report files itself at block on.</p></div><a class="btn" href="#profile" data-tab="profile">Get the tracker</a></div>
   ${list.length ? `<div class="trips">${list.map(tripCard).join('')}</div>` : `<div class="panel empty">Nothing booked. Quote on the request board or wait for the phone to ring.<div style="margin-top:12px"><a class="btn pri" href="#market" data-tab="market">Open the request board</a></div></div>`}</div>
   ${reps.length ? `<div class="section"><h2>Your recent reports</h2><div class="panel tablewrap"><table class="grid"><thead><tr><th>Filed</th><th>Status</th><th>Block</th><th>Landing</th><th>Net</th><th>Rep</th><th>Note</th></tr></thead><tbody>${reps.map(p => `<tr class="click" data-act="pirep" data-id="${p.id}"><td class="n">${fmtDate(p.created_at)}</td><td><span class="tag ${p.status}">${p.status}</span></td><td class="n">${hm(p.block_h)}</td><td class="n">${p.landing_fpm ?? '—'} fpm</td><td class="n">${p.net == null ? '—' : money(p.net)}</td><td class="n">${p.rep_delta == null ? '—' : (p.rep_delta > 0 ? '+' : '') + (+p.rep_delta).toFixed(1)}</td><td>${esc(p.review_note || '')}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
   list.forEach(tr => drawMap(document.getElementById('map-' + tr.id), tr));
+  renderDeck();
 }
+/* ---------- flight planning ---------- */
+const isIntl = t => (D.airports[t.from_icao]?.country || '') !== (D.airports[t.to_icao]?.country || '');
+function prepChips(t) {
+  const pr = t.prep || {}, items = t.brief?.items || [], done = (pr.arranged || []).length;
+  const chip = (ok, txt) => `<span class="${ok ? 'check-ok' : 'check-bad'}">${ok ? '✓' : '○'} ${txt}</span>`;
+  return [items.length ? chip(done >= items.length, `Client requests ${done}/${items.length}`) : '',
+    isIntl(t) ? chip(!!pr.customs, 'Customs declaration') : '', chip(!!t.ofp, 'SimBrief OFP')].join('');
+}
+let planGlobe = null;
+function renderPlan(trip) {
+  const ac = acById(trip.aircraft_id), t = typeOf(ac), p = plan(trip), pr = trip.prep || {}, brief = trip.brief || { items: [] };
+  const A = D.airports[trip.from_icao], B = D.airports[trip.to_icao], AL = D.airports[p.alt], intl = isIntl(trip);
+  const extra = +pr.extra_min || 0, extraFuel = Math.round(t.burn * extra / 60);
+  const fob = ac.fuel_lb != null ? +ac.fuel_lb : null;
+  const ofp = trip.ofp;
+  const arranged = new Set(pr.arranged || []);
+  $('#main').innerHTML = `<div class="section">
+  <div><button type="button" class="linkbtn" data-act="planback">← All trips</button></div>
+  <div class="sechead"><div><span class="mono" style="color:var(--brass)">${trip.flt} · ${ac.reg}</span><h2 style="font-size:32px">${esc(A?.city)} <span style="color:var(--brass);font-weight:500">to</span> ${esc(B?.city)}</h2>
+   <p>${trip.from_icao} – ${trip.to_icao} · ${esc(trip.client || 'Positioning')}${trip.pax ? ` · ${trip.pax} passengers` : ''} · departs ${fmtDep(trip.dep_at)} · ${dist(trip.dist)}, about ${hm(p.bh)}</p></div>
+   <div class="checks">${trip.kind === 'charter' ? prepChips(trip) : ''}</div></div>
+  <div class="planlayout">
+   <div class="plancol">
+    ${trip.kind === 'charter' ? `<div class="panel"><h3>Client brief</h3>
+     <p class="brieffrom">From <b>${esc(brief.from || 'the client')}</b></p>
+     <p class="brieftext">“${esc(brief.text || 'No special requests.')}”</p>
+     ${brief.items?.length ? `<div class="reqs">${brief.items.map(it => `<div class="req ${arranged.has(it.id) ? 'done' : ''}"><div><span class="tag ferry">${esc(it.kind)}</span> ${esc(it.text)}</div>
+       ${arranged.has(it.id) ? '<b class="okmark">✓ Arranged</b>' : `<button type="button" class="btn" data-act="arrange" data-id="${trip.id}" data-item="${it.id}">Arrange${it.cost ? ` · ${money(it.cost)}` : ''}</button>`}</div>`).join('')}</div>
+       <p class="hint" style="margin:8px 0 0">Anything not arranged by the time you land costs reputation.</p>` : ''}</div>` : ''}
+    ${trip.kind === 'charter' ? `<div class="panel"><h3>Customs</h3>${intl ? (pr.customs ? `<p style="margin:0"><b class="okmark">✓ Declaration filed</b> for ${esc(A?.country)} → ${esc(B?.country)}.</p>`
+      : `<p style="margin:0 0 10px">International flight (${esc(A?.country)} → ${esc(B?.country)}). File the general declaration and passenger manifest before departure, or the authorities will fine you after landing.</p>
+         <button type="button" class="btn pri" data-act="customs" data-id="${trip.id}">Submit customs forms · ${money(150)}</button>`)
+      : `<p style="margin:0">Domestic flight within ${esc(A?.country)}: no customs forms needed.</p>`}</div>` : ''}
+    <div class="panel"><h3>Fuel</h3>
+     <div class="specs" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div><label>On board now</label><span>${fob != null ? wt(fob) : 'Unknown'}</span></div><div><label>Planned trip fuel</label><span>${wt(p.tripFuel)}</span></div><div><label>Block fuel</label><span>${wt(p.block + extraFuel)}</span></div></div>
+     <p class="hint" style="margin:8px 0">${fob != null ? `That's what was left in the tanks after ${ac.reg}'s last flight.` : `The tracker records fuel on blocks after each flight, so this will show from the next one.`} ${fob != null && fob > p.block + extraFuel ? 'You already have enough for this trip.' : ''}</p>
+     <label class="field" style="gap:8px"><span style="font-size:12px;font-weight:600;color:var(--muted)">Extra fuel</span>
+      <span class="bands">${[0, 15, 30, 45, 60, 90].map(m => `<button type="button" class="chip" data-act="extrafuel" data-id="${trip.id}" data-min="${m}" aria-pressed="${extra === m}">${m ? `+${m} min` : 'None'}</button>`).join('')}</span></label>
+     ${extra ? `<p class="hint" style="margin:8px 0 0">+${extra} min is about ${wt(extraFuel)} extra. It goes into SimBrief as extra fuel.</p>` : ''}</div>
+    <div class="panel"><h3>SimBrief flight plan</h3>
+     ${D.me.simbrief ? `<p style="margin:0 0 10px">Linked to SimBrief as <b>${esc(D.me.simbrief)}</b>. <button type="button" class="linkbtn" data-act="sbunlink">Change</button></p>
+       <ol class="steps"><li>Open SimBrief with this trip filled in and press <b>Generate Flight</b> there.</li><li>Come back and fetch the plan.</li></ol>
+       <div class="btns" style="margin-top:10px"><a class="btn pri" href="${simbriefUrl(trip, p, extra)}" target="_blank" rel="noopener">Open in SimBrief ↗</a><button type="button" class="btn" data-act="fetchofp" data-id="${trip.id}">Fetch my plan</button></div>`
+      : `<p style="margin:0 0 10px">Link your SimBrief (Navigraph) account to generate and pull in the operational flight plan. Use your SimBrief username or Pilot ID, found in SimBrief's Account Settings.</p>
+       <form class="row2" id="sbForm"><div class="field"><label for="sbUser">SimBrief username or Pilot ID</label><input id="sbUser" autocomplete="off"></div><div class="field"><label>&nbsp;</label><button class="btn pri" type="submit">Link SimBrief</button></div></form>`}
+     <div class="err" id="ofpErr"></div>
+     ${ofp ? `<div class="ofp"><div class="specs" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div><label>Initial altitude</label><span>FL${Math.round((+ofp.alt || 0) / 100)}</span></div><div><label>Time en route</label><span>${hm((+ofp.ete || 0) / 3600)}</span></div><div><label>Ramp fuel</label><span>${(+ofp.ramp || 0).toLocaleString('en-US')} ${esc((ofp.units || '').toLowerCase())}</span></div></div>
+       <p class="mono route-str">${esc(ofp.route || '')}</p>${ofp.pdf ? `<a class="btn" href="${esc(ofp.pdf)}" target="_blank" rel="noopener">Open the OFP (PDF) ↗</a>` : ''}</div>` : ''}</div>
+   </div>
+   <div class="plancol">
+    <div class="panel globebox"><canvas id="planGlobe" aria-label="Route on a globe from ${trip.from_icao} to ${trip.to_icao}"></canvas>
+     <div class="zoom"><button type="button" class="btn" data-act="gzoom" data-z="1.4" aria-label="Zoom in">+</button><button type="button" class="btn" data-act="gzoom" data-z="0.7" aria-label="Zoom out">−</button></div></div>
+    <div class="panel"><div class="grid4" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+     <div class="kv"><label>Cruise</label><span>FL${p.fl}</span></div><div class="kv"><label>Course</label><span>${String(Math.round(brg(trip.from_icao, trip.to_icao))).padStart(3, '0')}°</span></div>
+     <div class="kv"><label>Alternate</label><span>${p.alt} · ${dist(p.altd)}</span></div><div class="kv"><label>Runways</label><span>${ft(rwy(trip.from_icao))} / ${ft(rwy(trip.to_icao))}</span></div>
+     <div class="kv"><label>Payload</label><span>${wt(p.payload)}</span></div><div class="kv"><label>Local time at ${trip.to_icao}</label><span>${tzTime(B?.tz || 'UTC')}</span></div>
+     <div class="kv"><label>Revenue</label><span>${money(trip.price)}</span></div><div class="kv"><label>Est. operating cost</label><span>${money(p.opc)}</span></div></div></div>
+    <div class="panel"><h3>Then fly it</h3><p style="margin:0">Load ${ac.reg} at ${trip.from_icao} in your sim, open the Charter Desk FS Tracker, choose ${trip.flt} and press <b>Start flight</b>. Passengers may ask for things on the way: answer in the tracker or here.</p></div>
+   </div></div></div>`;
+  planGlobe = new CDGlobe($('#planGlobe'), { from: { lat: A.lat, lon: A.lon, label: trip.from_icao }, to: { lat: B.lat, lon: B.lon, label: trip.to_icao }, alt: AL ? { lat: AL.lat, lon: AL.lon, label: p.alt } : null });
+  if ($('#sbForm')) $('#sbForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('set_simbrief', { p_user: $('#sbUser').value }), 'SimBrief linked.') };
+}
+function simbriefUrl(trip, p, extra) {
+  const ac = acById(trip.aircraft_id), d = new Date(trip.dep_at || Date.now()), mon = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][d.getUTCMonth()];
+  const fltNum = (trip.flt.split(' ')[1] || '').replace(/\D/g, '');
+  const rmk = trip.brief?.items?.length ? `CLIENT: ${trip.brief.items.map(i => i.text).join('; ')}` : '';
+  const q = new URLSearchParams({ type: ac.type_code, orig: trip.from_icao, dest: trip.to_icao, altn: p.alt, airline: D.me.prefix, fltnum: fltNum, callsign: D.me.prefix + fltNum,
+    reg: ac.reg, pax: String(trip.pax || 0), units: pref('weight') === 'kg' ? 'KGS' : 'LBS', date: `${pad(d.getUTCDate())}${mon}${String(d.getUTCFullYear()).slice(2)}`,
+    deph: pad(d.getUTCHours()), depm: pad(d.getUTCMinutes()), static_id: `CDFS_${trip.id}`, manualrmk: rmk.slice(0, 250) });
+  if (extra) { q.set('addedfuel', String(extra)); q.set('addedfuel_units', 'min') }
+  return `https://dispatch.simbrief.com/options/custom?${q}`;
+}
+async function fetchOfp(trip) {
+  const u = D.me.simbrief || '', who = /^\d+$/.test(u) ? `userid=${encodeURIComponent(u)}` : `username=${encodeURIComponent(u)}`;
+  const get = async extra => { const r = await fetch(`https://www.simbrief.com/api/xml.fetcher.php?${who}${extra}&json=1`); if (!r.ok) throw new Error(r.status === 400 ? 'SimBrief has no plan for that account yet.' : `SimBrief replied ${r.status}.`); return r.json() };
+  let j; try { j = await get(`&static_id=CDFS_${trip.id}`) } catch (e) { j = await get('') }
+  const sum = { orig: j.origin?.icao_code, dest: j.destination?.icao_code, route: j.general?.route, alt: j.general?.initial_altitude, ete: j.times?.est_time_enroute,
+    ramp: j.fuel?.plan_ramp, landing: j.fuel?.plan_landing, units: j.params?.units, pdf: j.files?.directory && j.files?.pdf?.link ? j.files.directory + j.files.pdf.link : null,
+    generated: j.params?.time_generated, request_id: j.params?.request_id };
+  await rpc('trip_prep', { p_trip: trip.id, p_action: 'ofp', p_value: sum });
+}
+
+/* ---------- live flight deck and passenger requests ---------- */
+async function renderDeck() {
+  const flying = D.trips.find(t => t.status === 'flying'); const el = $('#deck'); if (!el) return;
+  if (!flying) { el.innerHTML = ''; return }
+  const pos = (await q(sb.from('positions').select('*').eq('pilot_id', D.uid)))[0];
+  const A = D.airports[flying.from_icao], B = D.airports[flying.to_icao];
+  const left = pos ? nmLL(pos.lat, pos.lon, B.lat, B.lon) : flying.dist, done = Math.max(0, Math.min(100, Math.round((1 - left / flying.dist) * 100)));
+  const eta = pos && pos.gs > 60 ? new Date(Date.now() + left / pos.gs * 36e5) : null;
+  el.innerHTML = `<div class="section deck"><div class="sechead"><div><span class="tag flying">In flight</span><h2 style="margin-top:6px">${flying.flt} · ${esc(A?.city)} to ${esc(B?.city)}</h2>
+    <p>${pos ? `${esc(pos.phase || '')} at ${(pos.alt || 0).toLocaleString('en-US')} ft, ${pos.gs || 0} kt · ${dist(left)} to go${eta ? ` · lands around ${pad(eta.getUTCHours())}:${pad(eta.getUTCMinutes())}Z` : ''}` : 'Waiting for the tracker to report a position.'}</p></div></div>
+   <div class="trip"><div class="info"><div class="bar"><i style="width:${done}%"></i></div>
+     <div class="grid4"><div class="kv"><label>Progress</label><span>${done}%</span></div><div class="kv"><label>Altitude</label><span>${pos ? ft(pos.alt) : '—'}</span></div><div class="kv"><label>Ground speed</label><span>${pos ? pos.gs + ' kt' : '—'}</span></div><div class="kv"><label>Heading</label><span>${pos ? String(pos.hdg).padStart(3, '0') + '°' : '—'}</span></div></div>
+     <div id="deckCabin">${cabinList()}</div></div>
+    <div class="mapbox"><canvas id="deckGlobe" aria-label="Live position"></canvas></div></div></div>`;
+  new CDGlobe($('#deckGlobe'), { from: { lat: A.lat, lon: A.lon, label: flying.from_icao }, to: { lat: B.lat, lon: B.lon, label: flying.to_icao }, pos: pos ? { lat: pos.lat, lon: pos.lon, hdg: pos.hdg } : null });
+}
+function cabinList() {
+  const rs = D.cabin || [];
+  return rs.length ? rs.map(r => `<div class="cabinreq"><b>Passenger request</b><p>“${esc(r.text)}”</p><div class="btns">${r.options.map((o, i) => `<button type="button" class="btn ${i ? '' : 'pri'}" data-act="cabin" data-id="${r.id}" data-choice="${i}">${esc(o)}</button>`).join('')}</div><span class="hint">Unanswered in <span data-cd="${ts(r.expires_at)}"></span></span></div>`).join('')
+    : '<p class="hint" style="margin:0">No requests from the cabin right now.</p>';
+}
+function renderCabin() {
+  const rs = D.cabin || [], el = $('#cabin');
+  if (!rs.length || (UI.tab === 'trips' && $('#deckCabin'))) { el.innerHTML = ''; if ($('#deckCabin')) $('#deckCabin').innerHTML = cabinList(); return }
+  if (el.dataset.id === String(rs[0].id) && el.children.length) return;
+  el.dataset.id = rs[0].id; el.innerHTML = `<div class="cabincard" role="alertdialog" aria-label="Passenger request">${cabinList()}</div>`; updateCountdowns();
+}
+
 function tripCard(trip) {
   const ac = acById(trip.aircraft_id); if (!ac) return '';
   const p = plan(trip), t = p.t, qd = queue(ac), first = qd[0]?.id === trip.id, ferry = trip.kind === 'ferry';
@@ -431,7 +561,7 @@ function tripCard(trip) {
   const sbUrl = `https://dispatch.simbrief.com/options/custom?type=${ac.type_code}&orig=${trip.from_icao}&dest=${trip.to_icao}&altn=${p.alt}&airline=${D.me.prefix}&fltnum=${fltNum}&reg=${ac.reg}&pax=${trip.pax}&fl=${p.fl * 100}`;
   const A = D.airports[trip.from_icao], B = D.airports[trip.to_icao];
   const state = trip.status === 'flying' ? '<span class="tag flying">In flight</span>' : trip.status === 'filed' ? '<span class="tag filed">Awaiting review</span>' : first ? '<span class="tag won">Ready to fly</span>' : '<span class="tag pending">Queued</span>';
-  const ferryCost = Math.round(opRate(t) * p.bh * 1.5);
+  const ferryCost = Math.round(opRate(t, ac) * p.bh * 1.5);
   return `<article class="trip"><div class="info">
   <div class="flt"><b>${trip.flt}</b><span class="muted">${ac.reg} · ${esc(t.name)}</span>${ferry ? '<span class="tag ferry">Positioning</span>' : `<span class="tag ${trip.source === 'call' ? 'call' : 'won'}">${trip.source === 'call' ? 'Phone booking' : 'Won bid'}</span>`}${state}</div>
   <div><div class="route">${trip.from_icao}<i>▸</i>${trip.to_icao}</div><div class="places">${esc(A?.name)}, ${esc(A?.city)} to ${esc(B?.name)}, ${esc(B?.city)}${ferry ? ' · empty' : ` · ${esc(trip.caller ? trip.caller + ' (' + trip.client + ')' : trip.client)}`}</div></div>
@@ -450,8 +580,9 @@ function tripCard(trip) {
    <div class="kv"><label>Est. profit</label><span class="${profit >= 0 ? 'pos' : 'neg'}">${money(profit)}</span></div>
    <div class="kv"><label>Fuel split</label><span style="font-size:12px">Trip ${wt(p.tripFuel)} · Res ${wt(p.res)}</span></div>
   </div>
+  ${!ferry ? `<div class="checks">${prepChips(trip)}</div>` : ''}
   <div class="btns">
-   <a class="btn" href="${sbUrl}" target="_blank" rel="noopener">Plan in SimBrief ↗</a>
+   ${trip.status !== 'filed' ? `<button type="button" class="btn pri" data-act="plan" data-id="${trip.id}">Plan this flight</button>` : ''}
    <button type="button" class="btn" data-act="copyplan" data-id="${trip.id}">Copy plan</button>
    ${ferry && first && trip.status === 'booked' ? `<button type="button" class="btn" data-act="outsource" data-id="${trip.id}" data-cost="${ferryCost}">Use a contract crew · ${kmoney(ferryCost)}</button>` : ''}
    ${!ferry && trip.status === 'booked' ? `<button type="button" class="btn danger" data-act="cancel" data-id="${trip.id}">Cancel</button>` : ''}
@@ -479,30 +610,93 @@ function drawMap(cv, trip) {
   if (AL) { const near = Math.hypot(X(AL.lon) - X(T.lon), Y(AL.lat) - Y(T.lat)) < 40; if (near) { c.fillStyle = '#8A95A6'; c.beginPath(); c.arc(X(AL.lon), Y(AL.lat), 2.5, 0, 7); c.fill() } else lab(AL, '#8A95A6', alt + ' ALT', 2.5) } lab(F, '#8A6526', trip.from_icao, 4.5); lab(T, '#8A6526', trip.to_icao, 4.5);
 }
 
-function renderHangar() {
+async function renderHangar() {
   const used = D.fleet.length;
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Hangar</h2><p>${used} of ${D.me.slots} fleet slots in use. Aircraft stay wherever their last flight ended.</p></div></div>
+  const crew = await q(sb.from('crew').select('*').eq('pilot_id', D.uid).neq('status', 'quit'));
+  const crewTrips = await q(sb.from('trips').select('id,aircraft_id,flt,from_icao,to_icao,ends_at,status').eq('pilot_id', D.uid).eq('status', 'crew_flying'));
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Hangar</h2><p>${used} of ${D.me.slots} hangar spaces in use. Aircraft stay wherever their last flight ended. Hand an aircraft to your crew and they fly charters with it in real time.</p></div></div>
   <form class="panel" id="coForm" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:200px"><label for="coInput">Company name</label><input id="coInput" maxlength="40" value="${esc(D.me.company)}"></div>
    <div class="field" style="width:120px"><label for="pxInput">Flight prefix</label><input id="pxInput" maxlength="3" value="${esc(D.me.prefix)}"></div><button class="btn pri" type="submit">Save</button></form>
-  <div class="cards">${D.fleet.map(a => { const t = typeOf(a), n = queue(a).length; return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}</p>
-  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div><div><label>Legs queued</label><span>${n}</span></div><div><label>Seats / range</label><span>${t.seats} / ${dist(t.range_nm)}</span></div></div>
-  <div class="foot">${a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
-  <button type="button" class="btn" data-act="rereg" data-id="${a.id}">Change registration</button>
-  ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" ${n ? 'disabled title="Finish or cancel its trips first"' : ''}>Sell ${kmoney(Math.round(t.price * 0.6))}</button>` : ''}</div></div>` }).join('')}
-  ${Array.from({ length: Math.max(0, D.me.slots - used) }, () => `<div class="card" style="border-style:dashed;justify-content:center;align-items:center;text-align:center;min-height:180px"><p>Empty slot</p><a class="btn" href="#shop" data-tab="shop">Add an aircraft</a></div>`).join('')}</div></div>`;
+  <div class="cards">${D.fleet.map(a => {
+    const t = typeOf(a), n = queue(a).length, val = acValue(t.price, a.year_built), assigned = crew.filter(c => c.aircraft_id === a.id), ready = assigned.filter(c => c.status === 'active').length >= t.crew_req;
+    const ct = crewTrips.find(x => x.aircraft_id === a.id), crewMode = a.ops_mode === 'crew';
+    return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.year_built || ''} · ${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}${crewMode ? ' · <b style="color:var(--info)">Crew flying</b>' : ''}</p>
+  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Airframe hours</label><span>${Math.round(a.hours).toLocaleString('en-US')}</span></div>
+   <div><label>Value today</label><span>${kmoney(val)}</span></div><div><label>Fuel on board</label><span>${a.fuel_lb != null ? wt(a.fuel_lb) : 'Not known yet'}</span></div>
+   ${+a.loan_balance > 0 ? `<div><label>Loan left</label><span>${kmoney(a.loan_balance)}</span></div><div><label>Weekly payment</label><span>${money(a.loan_payment)}</span></div>` : ''}
+   <div><label>Earning rate</label><span>${Math.round((+a.rate_mul || 1) * 100)}% of new</span></div><div><label>Crew assigned</label><span>${assigned.length ? assigned.map(c => esc(c.name.split(' ')[0])).join(', ') : `None (needs ${t.crew_req})`}</span></div></div>
+  ${ct ? `<div class="note call">${esc(ct.flt)} ${ct.from_icao} → ${ct.to_icao} with your crew, on blocks around ${fmtDep(ct.ends_at)}.</div>` : ''}
+  <div class="foot">
+   ${crewMode ? `<button type="button" class="btn" data-act="opsmode" data-id="${a.id}" data-mode="owner">Take back to fly myself</button>`
+     : `${a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
+        <button type="button" class="btn" data-act="opsmode" data-id="${a.id}" data-mode="crew" ${ready && !n ? '' : 'disabled'} title="${!ready ? `Assign ${t.crew_req} rated, current pilot${t.crew_req > 1 ? 's' : ''} on the Crew page` : n ? 'Fly or cancel your own bookings first' : ''}">Give to crew</button>`}
+   <button type="button" class="btn" data-act="rereg" data-id="${a.id}">Re-register</button>
+   ${+a.loan_balance > 0 ? `<button type="button" class="btn" data-act="payoff" data-id="${a.id}" data-amt="${a.loan_balance}">Pay off loan</button>` : ''}
+   ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" data-val="${Math.round(val * 0.88 / 1000) * 1000}" ${n || crewMode ? 'disabled title="Finish its trips and take it back from the crew first"' : ''}>Sell</button>` : ''}</div></div>` }).join('')}
+  ${Array.from({ length: Math.max(0, D.me.slots - used) }, () => `<div class="card" style="border-style:dashed;justify-content:center;align-items:center;text-align:center;min-height:180px"><p>Empty hangar space</p><a class="btn" href="#shop" data-tab="shop">Buy an aircraft</a></div>`).join('')}</div></div>`;
   $('#coForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('update_company', { p_company: $('#coInput').value, p_prefix: $('#pxInput').value }), 'Company details saved.') };
 }
 
-function renderShop() {
+const SHOP_GROUPS = [['all', 'All'], ['piston', 'Pistons'], ['turboprop', 'Turboprops'], ['light', 'Light jets'], ['mid', 'Midsize'], ['large', 'Large and long-range'], ['vip', 'VIP airliners']];
+const shopGroup = t => t.category !== 'jet' ? t.category : /VIP/.test(t.cls) ? 'vip' : /Very light|Light/.test(t.cls) ? 'light' : /Midsize|Super/.test(t.cls) ? 'mid' : 'large';
+async function renderShop() {
   const free = D.me.slots - D.fleet.length, slotCost = 60000 * 2 ** (D.me.slots - 2), cash = D.me.cash;
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>Each aircraft takes a fleet slot and is delivered to your home base, ${D.me.home}. Prices are the lease deposit. ${free ? `You have ${free} free slot${free > 1 ? 's' : ''}.` : 'All slots are full, so buy a slot first.'}</p></div>
-  <div class="card" style="min-width:min(300px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
- <div class="cards">${D.typeList.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length; return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)}${own ? ` · ${own} in fleet` : ''}</p>
-  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div></div>
-  <div class="foot"><span class="price">${kmoney(t.price)}</span><button type="button" class="btn ${free && cash >= t.price ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free || cash < t.price ? 'disabled' : ''}>Add to fleet</button></div></div>` }).join('')}</div></div>
+  D.listings = await rpc('shop_listings');
+  UI.shopGroup = UI.shopGroup || 'all';
+  const types = D.typeList.filter(t => UI.shopGroup === 'all' || shopGroup(t) === UI.shopGroup);
+  const lst = (t, l) => {
+    const dep = Math.round(l.price * 0.15), wk = weeklyPayment(l.price - dep);
+    return `<div class="listing"><div><b>${l.is_new ? 'New' : l.year_built}</b><span class="muted">${l.is_new ? 'factory order' : `${(+l.hours).toLocaleString('en-US')} hrs · earns ${Math.round(Math.max(0.75, 1 - 0.008 * acAge(l.year_built)) * 100)}%`}</span></div>
+     <div class="lp"><b>${kmoney(l.price)}</b><span class="muted">or ${kmoney(dep)} + ${kmoney(wk)}/wk</span></div>
+     <div class="btns"><button type="button" class="btn" data-act="buy" data-k="${t.code}" data-slot="${l.slot}" data-fin="0" ${!free || cash < l.price ? 'disabled' : ''}>Buy</button>
+     <button type="button" class="btn pri" data-act="buy" data-k="${t.code}" data-slot="${l.slot}" data-fin="1" ${!free || cash < dep ? 'disabled' : ''}>Finance</button></div></div>` };
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft sales</h2><p>Real-world prices, new and used. Listings change daily. Older aircraft cost less but earn a lower charter rate and cost a little more to run. Finance is 15% down, then weekly payments over 10 years at 6.5%. Delivery to ${D.me.home}. ${free ? `${free} hangar space${free > 1 ? 's' : ''} free.` : 'Your hangar is full: buy more space first.'}</p></div>
+  <div class="card" style="min-width:min(300px,100%)"><div class="hd"><b>Hangar space ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy space</button></div></div>
+  <div class="bands">${SHOP_GROUPS.map(([k, l]) => `<button type="button" class="chip" data-act="shopgroup" data-k="${k}" aria-pressed="${UI.shopGroup === k}">${l}</button>`).join('')}</div>
+ <div class="cards shopcards">${types.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length, ls = D.listings[t.code] || []; return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)}${t.year_to ? ` · built ${t.year_from}–${t.year_to}` : ''}${own ? ` · ${own} in fleet` : ''}</p>
+  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate (new)</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Pilots</label><span>${t.crew_req}</span></div></div>
+  <div class="listings">${ls.length ? ls.map(l => lst(t, l)).join('') : '<p class="muted">None for sale today.</p>'}</div></div>` }).join('')}</div></div>
  <div class="section"><div class="sechead"><div><h2>Company upgrades</h2><p>Permanent improvements to how your desk wins and runs work.</p></div></div>
  <div class="cards">${Object.entries(UPG).map(([k, u]) => { const l = upg(k), c = u.cost[l]; return `<div class="card"><div class="hd"><b>${u.name}</b><div class="pips">${u.cost.map((_, i) => `<i class="${i < l ? 'on' : ''}"></i>`).join('')}</div></div><p>${u.desc}</p>
   <div class="foot">${l >= u.cost.length ? '<span class="tag won">Maxed</span>' : `<span class="price">${kmoney(c)}</span><button type="button" class="btn ${cash >= c ? 'pri' : ''}" data-act="upg" data-k="${k}" ${cash < c ? 'disabled' : ''}>Level ${l + 1}</button>`}</div></div>` }).join('')}</div></div>`;
+}
+const weeklyPayment = loan => loan <= 0 ? 0 : loan * (0.065 / 52) / (1 - Math.pow(1 + 0.065 / 52, -520));
+
+const TIER_SALARY = [900, 1500, 1900, 2300, 2800, 3300, 3800, 4400, 5000], TIER_RATING = [3000, 12000, 20000, 30000, 42000, 52000, 62000, 78000, 95000];
+const tier = code => { const p = D.types[code]?.price || 0; return p < 2e6 ? 0 : p < 5e6 ? 1 : p < 9e6 ? 2 : p < 13e6 ? 3 : p < 20e6 ? 4 : p < 30e6 ? 5 : p < 45e6 ? 6 : p < 90e6 ? 7 : 8 };
+const satColor = v => v >= 65 ? 'var(--ok)' : v >= 40 ? 'var(--warn)' : 'var(--bad)';
+async function renderCrew() {
+  const [crew, cands] = await Promise.all([q(sb.from('crew').select('*').eq('pilot_id', D.uid).neq('status', 'quit').order('hired_at')), rpc('crew_candidates')]);
+  const fleetTypes = [...new Set(D.fleet.map(a => a.type_code))];
+  const typeOpts = sel => [...fleetTypes, ...D.typeList.map(t => t.code).filter(c => !fleetTypes.includes(c))].map(c => `<option value="${c}" ${c === sel ? 'selected' : ''}>${esc(D.types[c].name)}${fleetTypes.includes(c) ? '' : ' (not in fleet)'}</option>`).join('');
+  const due = d => { if (!d) return '—'; const days = Math.round((ts(d) - Date.now()) / 864e5); return days < 0 ? `<b style="color:var(--bad)">overdue</b>` : days <= 21 ? `<b style="color:var(--warn)">in ${days} days</b>` : `in ${days} days` };
+  const payroll = crew.reduce((a, c) => a + c.salary_week, 0);
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Crew</h2><p>Hired pilots fly your aircraft when you hand it to them in the Hangar, earning money while you're away. They need a type rating, an operator proficiency check (OPC) every 6 months and recurrent training every year. As the company earns more, they'll expect a share of it: keep an eye on satisfaction and give pay rises before they walk.</p></div>
+   <div class="panel kv" style="min-width:220px"><label>Weekly payroll</label><span style="font-size:20px">${money(payroll)}</span></div></div>
+  ${crew.length ? `<div class="cards">${crew.map(c => { const ac = acById(c.aircraft_id), eligible = D.fleet.filter(a => a.type_code === c.type_code);
+    return `<div class="card"><div class="hd"><b>${esc(c.name)}</b><span class="tag ${c.status === 'active' ? 'won' : c.status === 'training' ? 'call' : 'lost'}">${c.status === 'training' ? `Training until ${fmtDep(c.training_until)}` : c.status === 'grounded' ? 'Grounded' : 'Current'}</span></div>
+    <p>${esc(D.types[c.type_code]?.name || 'No rating')} rating · skill ${c.skill} · ${c.experience_hrs.toLocaleString('en-US')} hrs${c.note ? ` · ${esc(c.note)}` : ''}</p>
+    <div><div style="display:flex;justify-content:space-between;font-size:12px"><span class="muted">Satisfaction</span><b style="color:${satColor(+c.satisfaction)}">${Math.round(c.satisfaction)}%</b></div><div class="bar"><i style="width:${c.satisfaction}%;background:${satColor(+c.satisfaction)}"></i></div></div>
+    <div class="specs"><div><label>Salary</label><span>${money(c.salary_week)}/week</span></div><div><label>Flown for you</label><span>${c.flights} legs · ${hm(c.hours)}</span></div>
+     <div><label>OPC due</label><span>${due(c.opc_due_at)}</span></div><div><label>Recurrent due</label><span>${due(c.recurrent_due_at)}</span></div></div>
+    <div class="field"><label for="as-${c.id}">Assigned aircraft</label><select id="as-${c.id}" data-act="assign" data-id="${c.id}"><option value="">Unassigned</option>${eligible.map(a => `<option value="${a.id}" ${a.id === c.aircraft_id ? 'selected' : ''}>${a.reg} at ${a.loc}</option>`).join('')}</select></div>
+    <div class="foot" style="justify-content:flex-start">
+     <button type="button" class="btn" data-act="train" data-id="${c.id}" data-kind="opc" data-cost="${Math.round(TIER_RATING[tier(c.type_code)] * 0.25)}" ${c.status === 'training' ? 'disabled' : ''}>Book OPC · ${kmoney(TIER_RATING[tier(c.type_code)] * 0.25)}</button>
+     <button type="button" class="btn" data-act="train" data-id="${c.id}" data-kind="recurrent" data-cost="${Math.round(TIER_RATING[tier(c.type_code)] * 0.4)}" ${c.status === 'training' ? 'disabled' : ''}>Recurrent · ${kmoney(TIER_RATING[tier(c.type_code)] * 0.4)}</button>
+     <button type="button" class="btn" data-act="raise" data-id="${c.id}" data-name="${esc(c.name)}" data-sal="${c.salary_week}">Pay rise</button>
+     <button type="button" class="btn" data-act="newrating" data-id="${c.id}" data-name="${esc(c.name)}" ${c.status === 'training' ? 'disabled' : ''}>New type rating</button>
+     <button type="button" class="btn danger" data-act="fire" data-id="${c.id}" data-name="${esc(c.name)}" data-sal="${c.salary_week}">Let go</button></div></div>` }).join('')}</div>` : '<div class="panel empty">No crew yet. Hire someone below, then hand them an aircraft in the Hangar.</div>'}</div>
+  <div class="section"><div class="sechead"><div><h2>Looking for work today</h2><p>Hiring is free, but they need a type rating on the aircraft they'll fly before they start: about 24 hours of training. The list changes every day.</p></div></div>
+  <div class="cards">${cands.map(c => `<div class="card"><div class="hd"><b>${esc(c.name)}</b><span>skill ${c.skill}</span></div><p>${c.experience_hrs.toLocaleString('en-US')} flying hours · asks ${c.ask >= 1.1 ? 'above' : c.ask <= 0.95 ? 'below' : 'around'} market pay</p>
+    <div class="field"><label for="ht-${c.slot}">Train them on</label><select id="ht-${c.slot}" data-act="hiretype" data-slot="${c.slot}">${typeOpts(fleetTypes[0])}</select></div>
+    <div class="specs" id="hs-${c.slot}"></div>
+    <div class="foot"><button type="button" class="btn pri" data-act="hire" data-slot="${c.slot}">Hire and train</button></div></div>`).join('')}</div></div>`;
+  const quoteHire = slot => { const c = cands.find(x => x.slot === slot), code = $('#ht-' + slot).value, sal = Math.round(TIER_SALARY[tier(code)] * (0.85 + c.skill / 200) * c.ask / 10) * 10;
+    $('#hs-' + slot).innerHTML = `<div><label>Salary</label><span>${money(sal)}/week</span></div><div><label>Type rating</label><span>${money(TIER_RATING[tier(code)])}</span></div>` };
+  cands.forEach(c => quoteHire(c.slot));
+  document.querySelectorAll('[data-act=hiretype]').forEach(el => el.onchange = () => quoteHire(+el.dataset.slot));
+  document.querySelectorAll('[data-act=assign]').forEach(el => el.onchange = async () => { try { await rpc('assign_crew', { p_crew: el.dataset.id, p_ac: el.value || null }); toast('Crew assignment updated.', 'ok'); await afterChange() } catch (err) { toast(err.message, 'bad'); renderTab() } });
+  D.crewTypeOpts = typeOpts;
 }
 
 async function renderLedger() {
@@ -605,12 +799,16 @@ async function renderProfile() {
    <div class="field"><label>Your tracker setup code</label><div class="code" id="setupCode">${code}</div></div>
    <div class="btns"><button type="button" class="btn" data-act="copycode">Copy setup code</button><button type="button" class="btn danger" data-act="rotatekey">Make a new code</button></div>
    <p class="muted" style="margin:0;font-size:12.5px">The code lets the tracker file flights as you. Keep it private. Making a new code stops the old one working.</p></div></div>
+  <div class="section"><h2>SimBrief</h2><form class="panel" id="sbProfile" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+   <div class="field" style="flex:1;min-width:220px"><label for="sbP">SimBrief username or Pilot ID</label><input id="sbP" value="${esc(D.me.simbrief || '')}" autocomplete="off"></div>
+   <button class="btn pri" type="submit">Save</button><p class="hint" style="margin:0;flex-basis:100%">Used to open SimBrief with each trip filled in and to pull your flight plan back in. Find your Pilot ID in SimBrief under Account Settings.</p></form></div>
   <div class="section"><h2>Settings</h2><form class="panel" id="prefForm" style="display:flex;flex-direction:column;gap:12px">
    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">${settingsFields({ ...PREF_DEFAULTS, ...(D.me.prefs || {}) }, 'pf')}</div>
    <p class="hint" style="margin:0">Currency changes what you see. Everyone trades in one VA economy, converted at fixed game rates: $1 = £0.79 = €0.92.</p>
    <div class="btns"><button class="btn pri" type="submit">Save settings</button></div></form></div>
   <div class="section"><h2>Account</h2><div class="panel kv" style="display:flex;gap:28px;flex-wrap:wrap"><div><label>Callsign</label><span>${esc(D.me.callsign)}</span></div><div><label>Name</label><span>${esc(D.me.name)}</span></div><div><label>Home base</label><span>${D.me.home}</span></div><div><label>Joined</label><span>${new Date(D.me.created_at).toLocaleDateString('en-GB')}</span></div></div></div>`;
   $('#prefForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('update_prefs', { p_prefs: readSettings('pf') }), 'Settings saved.'); clock() };
+  $('#sbProfile').onsubmit = async e => { e.preventDefault(); await act(() => rpc('set_simbrief', { p_user: $('#sbP').value }), 'SimBrief account saved.') };
 }
 
 /* ---------- staff ---------- */
@@ -721,7 +919,7 @@ document.addEventListener('click', async e => {
     try { await rpc('place_bid', { p_request: +id, p_aircraft: active().id, p_amount: v }); closeModal(); toast(`Quote of ${money(v)} sent.`, ''); await afterChange() }
     catch (err) { $('#bidErr').textContent = err.message }
   }
-  if (a === 'acceptcall') { const ac = $('#callAc')?.value || D.fleet.find(x => fits(typeOf(x), D.calls[0]))?.id; await act(() => rpc('accept_call', { p_call: +id, p_aircraft: ac }), 'Booked. Plan it under Trips.'); $('#call').dataset.id = '' }
+  if (a === 'acceptcall') { const ac = $('#callAc')?.value || ownFleet().find(x => fits(typeOf(x), D.calls[0]))?.id; await act(() => rpc('accept_call', { p_call: +id, p_aircraft: ac }), 'Booked. Plan it under Trips.'); $('#call').dataset.id = '' }
   if (a === 'declinecall') { await act(() => rpc('decline_call', { p_call: +id })); $('#call').dataset.id = '' }
   if (a === 'copyplan') {
     const tr = D.trips.find(x => x.id === +id), p = plan(tr), ac = p.ac;
@@ -731,12 +929,33 @@ document.addEventListener('click', async e => {
   if (a === 'outsource') confirmBox('Use a contract crew?', `A contract crew positions the aircraft for ${money(+b.dataset.cost)}. You won't need to fly this leg.`, 'Pay and position', () => rpc('outsource_ferry', { p_trip: +id }));
   if (a === 'cancel') { const tr = D.trips.find(x => x.id === +id); confirmBox(`Cancel ${tr.flt}?`, `${esc(tr.client)} will need another operator. You'll pay a ${money(Math.round(tr.price * 0.2))} cancellation fee and lose 5 reputation.`, 'Cancel trip', () => rpc('cancel_trip', { p_trip: +id })) }
   if (a === 'buyslot') await act(() => rpc('buy_slot'), 'New fleet slot ready.');
-  if (a === 'buyac') regBox(`Add a ${D.types[b.dataset.k].name}`, `The lease deposit is ${money(D.types[b.dataset.k].price)}. It will be delivered to ${D.me.home}.`, 'Add to fleet', null,
-    async reg => { await rpc('buy_aircraft', { p_type: b.dataset.k, p_reg: reg }); toast(`${D.types[b.dataset.k].name} ${reg} delivered to ${D.me.home}.`, 'ok') });
+  if (a === 'buy') {
+    const t = D.types[b.dataset.k], l = (D.listings[b.dataset.k] || []).find(x => x.slot === +b.dataset.slot), fin = b.dataset.fin === '1';
+    const dep = Math.round(l.price * 0.15), wk = weeklyPayment(l.price - dep);
+    regBox(`${l.is_new ? 'New' : l.year_built} ${t.name}`, fin ? `Pay ${money(dep)} now, then ${money(wk)} a week for 10 years. Delivered to ${D.me.home}.` : `Pay ${money(l.price)} now. Delivered to ${D.me.home}.`, fin ? 'Finance it' : 'Buy it', null,
+      async reg => { await rpc('buy_listing', { p_type: t.code, p_slot: l.slot, p_reg: reg, p_finance: fin }); toast(`${t.name} ${reg} delivered to ${D.me.home}.`, 'ok') });
+  }
+  if (a === 'hire') { const slot = +b.dataset.slot, code = $('#ht-' + slot).value; await act(() => rpc('hire_crew', { p_slot: slot, p_type: code }), `Hired. Type rating training on the ${D.types[code].name} has started.`) }
+  if (a === 'train') confirmBox(b.dataset.kind === 'opc' ? 'Book an OPC?' : 'Book recurrent training?', `${b.dataset.kind === 'opc' ? 'The operator proficiency check takes about 6 hours' : 'Recurrent training takes about 24 hours'} and costs ${money(+b.dataset.cost)}. They can't fly in the meantime.`, 'Book it', () => rpc('crew_training', { p_crew: id, p_kind: b.dataset.kind }));
+  if (a === 'raise') confirmBox(`Pay rise for ${b.dataset.name}`, `Currently ${money(+b.dataset.sal)} a week.<div class="btns" style="margin-top:12px">${[5, 10, 15].map(p => `<label class="chip"><input type="radio" name="rise" value="${p}" ${p === 10 ? 'checked' : ''}> +${p}% (${money(Math.round(b.dataset.sal * (1 + p / 100)))})</label>`).join('')}</div>`, 'Give the rise', () => rpc('pay_rise', { p_crew: id, p_pct: +document.querySelector('input[name=rise]:checked').value }));
+  if (a === 'newrating') confirmBox(`New type rating for ${b.dataset.name}`, `<div class="field" style="margin-top:10px"><label for="nrType">Aircraft type</label><select id="nrType">${D.crewTypeOpts('')}</select></div><p class="hint" style="margin-top:8px">They come off their current aircraft while training (about 24 hours).</p>`, 'Start training', () => rpc('crew_training', { p_crew: id, p_kind: 'rating', p_type: $('#nrType').value }));
+  if (a === 'fire') confirmBox(`Let ${b.dataset.name} go?`, `You'll pay two weeks' severance: ${money(b.dataset.sal * 2)}.`, 'Let them go', () => rpc('fire_crew', { p_crew: id }));
+  if (a === 'plan') { UI.plan = +id; renderTab(); window.scrollTo(0, 0) }
+  if (a === 'planback') { UI.plan = null; renderTab() }
+  if (a === 'arrange') await act(() => rpc('trip_prep', { p_trip: +id, p_action: 'arrange', p_value: { id: +b.dataset.item } }), 'Arranged.');
+  if (a === 'customs') await act(() => rpc('trip_prep', { p_trip: +id, p_action: 'customs', p_value: {} }), 'Customs forms submitted.');
+  if (a === 'extrafuel') await act(() => rpc('trip_prep', { p_trip: +id, p_action: 'fuel', p_value: { extra_min: +b.dataset.min } }));
+  if (a === 'fetchofp') { const tr = D.trips.find(t => t.id === +id); $('#ofpErr').textContent = 'Fetching your plan from SimBrief…'; try { await fetchOfp(tr); toast('Flight plan loaded from SimBrief.', 'ok'); await afterChange() } catch (err) { $('#ofpErr').textContent = err.message } }
+  if (a === 'sbunlink') await act(() => rpc('set_simbrief', { p_user: '' }));
+  if (a === 'gzoom' && planGlobe) planGlobe.setZoom(planGlobe.zoom * +b.dataset.z);
+  if (a === 'cabin') { try { await rpc('answer_cabin', { p_req: +id, p_choice: +b.dataset.choice }); D.cabin = (D.cabin || []).filter(r => r.id !== +id); $('#cabin').innerHTML = ''; renderCabin(); toast('The cabin is happy.', 'ok') } catch (err) { toast(err.message, 'bad') } }
+  if (a === 'shopgroup') { UI.shopGroup = b.dataset.k; renderTab() }
+  if (a === 'opsmode') await act(() => rpc('set_ops_mode', { p_ac: id, p_mode: b.dataset.mode }), b.dataset.mode === 'crew' ? 'Your crew have the aircraft. They’ll start flying charters shortly.' : 'The aircraft is back with you.');
+  if (a === 'payoff') confirmBox('Pay off this loan?', `Clear the remaining ${money(+b.dataset.amt)} in one payment. No more weekly payments on this aircraft.`, 'Pay it off', () => rpc('payoff_loan', { p_ac: id }));
   if (a === 'rereg') { const ac = acById(id); regBox(`Re-register ${ac.reg}`, `Choose a new registration for your ${esc(typeOf(ac).name)}. It's free, and every pilot will see the new one.`, 'Save registration', ac.id,
     async reg => { await rpc('set_registration', { p_ac: id, p_reg: reg }); toast(`${ac.reg} is now ${reg}.`, 'ok') }) }
   if (a === 'upg') await act(() => rpc('buy_upgrade', { p_key: b.dataset.k }), `${UPG[b.dataset.k].name} upgraded.`);
-  if (a === 'sell') { const ac = acById(id), t = typeOf(ac); confirmBox(`Sell ${ac.reg}?`, `The ${esc(t.name)} returns to the lessor and you recover ${money(Math.round(t.price * 0.6))} of the deposit.`, 'Sell aircraft', async () => { await rpc('sell_aircraft', { p_ac: id }); if (UI.acId === id) UI.acId = null }) }
+  if (a === 'sell') { const ac = acById(id), t = typeOf(ac), v = +b.dataset.val, net = v - (+ac.loan_balance || 0); confirmBox(`Sell ${ac.reg}?`, `A broker will buy your ${ac.year_built} ${esc(t.name)} for ${money(v)}${+ac.loan_balance > 0 ? `. After clearing the ${money(ac.loan_balance)} loan you’ll receive ${money(net)}` : ''}.`, 'Sell aircraft', async () => { await rpc('sell_aircraft', { p_ac: id }); if (UI.acId === id) UI.acId = null }) }
   if (a === 'pirep') openPirep(+id, false).catch(err => toast(err.message, 'bad'));
   if (a === 'pirepstaff') openPirep(+id, true).catch(err => toast(err.message, 'bad'));
   if (a === 'review') { const note = $('#rvNote')?.value || ''; try { await rpc('admin_review', { p_pirep: +id, p_accept: b.dataset.ok === '1', p_note: note }); closeModal(); toast('Review saved.', 'ok'); renderTab() } catch (err) { toast(err.message, 'bad') } }

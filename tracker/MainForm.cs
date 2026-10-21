@@ -5,7 +5,7 @@ namespace CharterDeskTracker;
 
 public sealed class MainForm : Form
 {
-    const string Version = "0.1.0";
+    const string Version = "0.2.0";
 
     Config _cfg = Config.Load();
     Api _api;
@@ -26,6 +26,8 @@ public sealed class MainForm : Form
     readonly Label _phase = new() { AutoSize = true, Font = new Font("Segoe UI Semibold", 16f), Text = "No flight" };
     readonly Label _live = new() { AutoSize = true, Font = new Font("Consolas", 10f) };
     readonly Label _landing = new() { AutoSize = true, Font = new Font("Consolas", 10f) };
+    readonly FlowLayoutPanel _cabin = new() { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+    long _shownRequest;
     readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f) };
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 250 };
     readonly System.Windows.Forms.Timer _connect = new() { Interval = 5000 };
@@ -55,7 +57,7 @@ public sealed class MainForm : Form
         root.Controls.Add(btns);
 
         var status = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
-        status.Controls.AddRange(new Control[] { _phase, _live, _landing });
+        status.Controls.AddRange(new Control[] { _phase, _live, _landing, _cabin });
         root.Controls.Add(status);
         root.Controls.Add(_log);
         Controls.Add(root);
@@ -233,8 +235,38 @@ public sealed class MainForm : Form
         if (_rec.Phase != Phase.Waiting && _rec.Phase != Phase.Arrived && (DateTime.UtcNow - _lastPositionSent).TotalSeconds >= 15)
         {
             _lastPositionSent = DateTime.UtcNow;
-            try { await _api.Position(_rec.Booking.Id, s, _rec.Phase); } catch { /* live map only; ignore blips */ }
+            try { ShowCabin(await _api.Position(_rec.Booking.Id, s, _rec.Phase)); } catch { /* live map only; ignore blips */ }
         }
+    }
+
+    // passengers ask for things during the flight; answer here or on the website
+    void ShowCabin(JsonNode res)
+    {
+        var first = (res?["requests"] as JsonArray)?.FirstOrDefault();
+        if (first == null) { if (_shownRequest != 0) { _cabin.Controls.Clear(); _shownRequest = 0; } return; }
+        var id = first["id"]!.GetValue<long>();
+        if (id == _shownRequest) return;
+        _shownRequest = id;
+        _cabin.Controls.Clear();
+        _cabin.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(620, 0), Font = new Font("Segoe UI Semibold", 10f), ForeColor = Color.FromArgb(47, 111, 163),
+            Text = "Passenger request: \u201C" + first["text"]!.GetValue<string>() + "\u201D" });
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
+        var opts = first["options"]!.AsArray();
+        for (int i = 0; i < opts.Count; i++)
+        {
+            int choice = i;
+            var b = new Button { Text = opts[i]!.GetValue<string>(), AutoSize = true };
+            b.Click += async (_, _) =>
+            {
+                try { await _api.Answer(id, choice); Log("Answered the cabin: " + b.Text); }
+                catch (Exception ex) { Log("Couldn't answer: " + ex.Message); }
+                _cabin.Controls.Clear(); _shownRequest = 0;
+            };
+            row.Controls.Add(b);
+        }
+        _cabin.Controls.Add(row);
+        Log("Passenger request: " + first["text"]!.GetValue<string>());
+        System.Media.SystemSounds.Asterisk.Play();
     }
 
     async Task FileReport()

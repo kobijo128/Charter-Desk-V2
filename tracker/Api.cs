@@ -112,11 +112,13 @@ public sealed class Api
 
     public Task Start(long trip) => Rpc("tracker_start", new JsonObject { ["p_trip"] = trip });
 
-    public Task Position(long trip, Sample s, Phase phase) => Rpc("tracker_position", new JsonObject
+    public Task<JsonNode> Position(long trip, Sample s, Phase phase) => Rpc("tracker_position", new JsonObject
     {
         ["p_trip"] = trip, ["p_lat"] = Math.Round(s.Lat, 5), ["p_lon"] = Math.Round(s.Lon, 5),
         ["p_alt"] = (int)s.AltFt, ["p_gs"] = (int)s.GsKt, ["p_hdg"] = (int)s.HdgTrue, ["p_phase"] = phase.ToString()
     });
+
+    public Task Answer(long request, int choice) => Rpc("tracker_answer", new JsonObject { ["p_req"] = request, ["p_choice"] = choice });
 
     public async Task<JsonNode> File(long trip, JsonObject report)
     {
