@@ -32,7 +32,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = $"Charter Desk Tracker {Version}";
+        Text = $"Charter Desk FS Tracker {Version}";
         Width = 720; Height = 640; MinimumSize = new Size(560, 480);
         Font = new Font("Segoe UI", 9.5f);
 

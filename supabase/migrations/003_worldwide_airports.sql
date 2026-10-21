@@ -262,3 +262,6 @@ revoke execute on function public.gen_route(text,int,int,int) from public, anon,
 revoke execute on function public.spawn_request(text,int,int) from public, anon, authenticated;
 revoke execute on function public.admin_import_airports(jsonb) from public, anon;
 grant execute on function public.admin_import_airports(jsonb) to authenticated;
+
+-- the site's new name
+update public.va_settings set va_name = 'Charter Desk FS' where va_name = 'Altus Virtual';

@@ -1,4 +1,4 @@
-# Charter Desk VA
+# Charter Desk FS
 
 A standalone virtual airline where every pilot runs their own charter company. Pilots quote on a shared request board, take private phone bookings, fly the trips in their sim with the Charter Desk Tracker, and get paid from the real flight data.
 

@@ -52,7 +52,7 @@ const CALL_LINES = [
 ];
 
 if (!window.supabase || !CFG.supabaseUrl || CFG.supabaseUrl.includes('YOUR-PROJECT')) {
-  $('#main').innerHTML = `<div class="authwrap"><div class="authcard"><h1>Almost there</h1><p>Open <b class="mono">config.js</b> and fill in your Supabase project URL and anon key, then reload this page.</p></div></div>`;
+  $('#main').innerHTML = `<div class="authwrap"><div class="authcard"><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Almost there</h1><p>Open <b class="mono">config.js</b> and fill in your Supabase project URL and anon key, then reload this page.</p></div></div>`;
   throw new Error('Charter Desk is not configured');
 }
 const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
@@ -186,7 +186,7 @@ async function loadStatic() {
     q(sb.from('clients').select('*'))]);
   D.settings = settings; D.apList = aps.filter(a => a.active); D.airports = Object.fromEntries(aps.map(a => [a.icao, a]));
   D.types = Object.fromEntries(types.map(t => [t.code, t])); D.typeList = types; D.clients = clients;
-  document.title = `${settings.va_name} · Charter Desk`;
+  document.title = 'Charter Desk FS';
 }
 async function refreshCore() {
   const u = D.uid;
@@ -219,7 +219,7 @@ async function doPoll() {
 function renderAuth(mode) {
   mode = mode || 'in';
   $('#main').innerHTML = `<div class="authwrap"><form class="authcard" id="authForm">
-    <h1>Charter Desk</h1><p>${mode === 'in' ? 'Sign in to run your charter company.' : 'Create a pilot account. You\'ll set up your company next.'}</p>
+    <div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>${mode === 'in' ? 'Welcome back' : 'Join the desk'}</h1><p>${mode === 'in' ? 'Sign in to run your charter company.' : 'Create a pilot account. You\'ll set up your company next.'}</p>
     <div class="field"><label for="aEmail">Email</label><input id="aEmail" type="email" autocomplete="email" required></div>
     <div class="field"><label for="aPass">Password</label><input id="aPass" type="password" autocomplete="${mode === 'in' ? 'current-password' : 'new-password'}" minlength="8" required></div>
     <div class="err" id="aErr"></div>
@@ -261,7 +261,7 @@ async function renderOnboarding() {
   PREFS_OVERRIDE = startPrefs;
   const opts = D.apList.map(a => `<option value="${a.icao}">${esc(a.city)} · ${esc(a.name)}</option>`).join('');
   $('#main').innerHTML = `<div class="authwrap"><form class="authcard wide" id="obForm" novalidate>
-    <div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and one aircraft of your choice at your home base.</p></div>
+    <div><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and one aircraft of your choice at your home base.</p></div>
     <h3 class="obh">1 · Pilot and company</h3>
     <div class="row2"><div class="field"><label for="obCs">Pilot callsign</label><input id="obCs" maxlength="8" placeholder="ALT001" autocomplete="off"></div>
     <div class="field"><label for="obName">Your name</label><input id="obName" maxlength="40" autocomplete="name"></div></div>
@@ -316,8 +316,7 @@ async function renderOnboarding() {
 
 /* ---------- header, call, countdowns ---------- */
 function renderHeader() {
-  $('#vaName').textContent = D.settings.va_name + ' · ' + D.me.callsign;
-  $('#coName').textContent = D.me.company;
+  $('#coName').textContent = `${D.me.company} · ${D.me.callsign}`;
   $('#gCash').textContent = money(D.me.cash);
   $('#gRep').textContent = Math.round(D.me.rep) + ' / 100';
   $('#gRepBar').style.width = D.me.rep + '%';
@@ -338,14 +337,19 @@ function renderCall() {
   $('#call').dataset.id = c.id;
   const A = D.airports[c.from_icao], B = D.airports[c.to_icao];
   const el = D.fleet.filter(a => fits(typeOf(a), c));
-  $('#call').innerHTML = `<div class="callcard" role="alertdialog" aria-label="Incoming call">
-  <div class="who"><div class="phone"><svg viewBox="0 0 24 24" fill="#06242b"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></div>
-  <div><b>${esc(c.caller)}</b><div class="muted" style="font-size:12px">${esc(c.client)} · rings off in <span data-cd="${ts(c.expires_at)}"></span></div></div></div>
-  <q>${esc(CALL_LINES[c.line % 4](c, A, B))}</q>
-  <div class="mono" style="font-size:13px">${c.from_icao} → ${c.to_icao} · ${dist(c.dist)} · ${fmtDep(c.dep_at)}</div>
-  <div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap"><div><div class="muted" style="font-size:11px;font-family:var(--f-disp);letter-spacing:.12em;text-transform:uppercase">Offering</div><div class="offer">${money(c.offer)}</div></div>
-  ${el.length > 1 ? `<select class="sel" id="callAc" aria-label="Aircraft">${el.map(a => `<option value="${a.id}">${a.reg} · ${a.type_code} @ ${futureLoc(a)}</option>`).join('')}</select>` : el.length ? `<span class="mono muted" style="font-size:12px">${el[0].reg} @ ${futureLoc(el[0])}</span>` : '<span class="muted" style="font-size:12px">No aircraft can fly this</span>'}</div>
-  <div class="btns"><button type="button" class="btn pri" data-act="acceptcall" data-id="${c.id}" ${el.length ? '' : 'disabled'}>Accept job</button><button type="button" class="btn" data-act="declinecall" data-id="${c.id}">Decline</button></div></div>`;
+  const initials = c.caller.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  $('#call').innerHTML = `<div class="callcard" role="alertdialog" aria-label="Incoming call from ${esc(c.caller)}">
+  <span class="lbl">CHARTER DESK FS · INCOMING CALL</span>
+  <div class="avatar" aria-hidden="true">${esc(initials)}</div>
+  <div class="who"><b>${esc(c.caller)}</b><span>${esc(c.client)} · rings off in <span data-cd="${ts(c.expires_at)}"></span></span></div>
+  <div class="msg"><q>${esc(CALL_LINES[c.line % 4](c, A, B))}</q>
+   <div class="line"><span>${c.from_icao} → ${c.to_icao}</span><span>${dist(c.dist)} · ${fmtDep(c.dep_at)}</span></div>
+   <div class="line" style="align-items:baseline"><span>Offering</span><span class="offer">${money(c.offer)}</span></div>
+   ${el.length > 1 ? `<select class="sel" id="callAc" aria-label="Aircraft">${el.map(a => `<option value="${a.id}">${a.reg} · ${a.type_code} at ${futureLoc(a)}</option>`).join('')}</select>` : el.length ? `<div class="line"><span>Aircraft</span><span>${el[0].reg} at ${futureLoc(el[0])}</span></div>` : '<div class="line"><span>None of your aircraft can fly this job.</span></div>'}</div>
+  <div class="answer">
+   <div><button type="button" class="no" data-act="declinecall" data-id="${c.id}" aria-label="Decline the call"><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85a1 1 0 0 1-1.41-.02L.29 13.08a1 1 0 0 1 0-1.41C3.34 8.77 7.46 7 12 7s8.66 1.77 11.71 4.67a1 1 0 0 1 0 1.41l-2.48 2.47a1 1 0 0 1-1.41.02 11.27 11.27 0 0 0-2.66-1.85 1 1 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>Decline</div>
+   <div><button type="button" class="yes" data-act="acceptcall" data-id="${c.id}" aria-label="Accept the job" ${el.length ? '' : 'disabled'}><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></button>Accept job</div>
+  </div></div>`;
   updateCountdowns();
 }
 
@@ -384,14 +388,14 @@ function renderMarket() {
    <div><label>Op. cost</label><span>${kmoney(opRate(t))}/h</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div></div></div>
  </aside>
  <section style="min-width:0">
-  <div class="boardhead"><div><h2>Request board · ${new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</h2><p>${mood} Every ${esc(D.settings.va_name)} pilot sees this board.</p></div>
-   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="nearOnly" data-act="nearonly" ${UI.nearOnly ? 'checked' : ''}> Only within ${dist(NEAR_NM)} of ${ac.reg}${far && UI.nearOnly ? ` (${far} further away)` : ''}</label>
+  <div class="boardhead"><div><h2>${h < 5 || h >= 18 ? 'Tonight’s' : h < 12 ? 'This morning’s' : 'This afternoon’s'} enquiries</h2><p>${mood} Every ${esc(D.settings.va_name)} pilot sees this board.</p></div>
+   <div class="boardtools"><label class="check"><input type="checkbox" id="nearOnly" data-act="nearonly" ${UI.nearOnly ? 'checked' : ''}> Only within ${dist(NEAR_NM)} of ${ac.reg}${far && UI.nearOnly ? ` (${far} further away)` : ''}</label>
    <label class="check"><input type="checkbox" id="showAll" data-act="showall" ${UI.showAll ? 'checked' : ''}> Show requests this aircraft can't fly${hidden && !UI.showAll ? ` (${hidden})` : ''}</label>
    <select class="sel" id="sortSel" data-act="sort" aria-label="Sort requests">${[['closing', 'Closing soonest'], ['value', 'Highest value'], ['dep', 'Earliest departure'], ['repo', 'Closest to aircraft']].map(([k, l]) => `<option value="${k}" ${UI.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
   <div class="strips">${list.length ? list.map(x => strip(x, ac)).join('') : `<div class="empty">No requests in this time band for ${ac.reg} right now. New requests arrive every minute or so.</div>`}</div>
  </section>
  <aside class="bidcol">
-  <div class="panel"><h3>Bids with brokers</h3>${pending.length ? `<div style="display:flex;flex-direction:column;gap:8px">${pending.map(b => { const r = D.requests.find(x => x.id === b.request_id); const until = r?.decide_at ? ts(r.decide_at) : Date.now(); return `<div class="bid"><div class="r"><span>${r ? `${r.from_icao} → ${r.to_icao}` : 'Request'}</span><b>${money(b.amount)}</b></div><div class="bar"><i data-bar data-from="${ts(b.placed_at)}" data-until="${until}"></i></div><small>${acById(b.aircraft_id)?.reg || ''}${r && r.player_bids > 1 ? ` · ${r.player_bids - 1} other VA pilot${r.player_bids > 2 ? 's' : ''} quoting` : ''} · decision in <span data-cd="${until}"></span></small></div>` }).join('')}</div>` : `<p class="muted" style="margin:0;font-size:13px">No open bids. Pick a strip and quote a price. The broker decides ${BIDWAIT[Math.min(3, upg('fast'))]} seconds after the first quote.</p>`}</div>
+  <div class="panel"><h3>Bids with brokers</h3>${pending.length ? `<div style="display:flex;flex-direction:column;gap:8px">${pending.map(b => { const r = D.requests.find(x => x.id === b.request_id); const until = r?.decide_at ? ts(r.decide_at) : Date.now(); return `<div class="bid"><div class="r"><span>${r ? `${r.from_icao} → ${r.to_icao}` : 'Request'}</span><b>${money(b.amount)}</b></div><div class="bar"><i data-bar data-from="${ts(b.placed_at)}" data-until="${until}"></i></div><small>${acById(b.aircraft_id)?.reg || ''}${r && r.player_bids > 1 ? ` · ${r.player_bids - 1} other VA pilot${r.player_bids > 2 ? 's' : ''} quoting` : ''} · decision in <span data-cd="${until}"></span></small></div>` }).join('')}</div>` : `<p class="muted" style="margin:0;font-size:13px">No open bids. Pick a job and quote a price. The broker decides ${BIDWAIT[Math.min(3, upg('fast'))]} seconds after the first quote.</p>`}</div>
   <div class="panel"><h3>Recent decisions</h3>${recent.length ? recent.map(b => `<div class="result"><span class="tag ${b.status}">${b.status === 'won' ? 'Won' : 'Lost'}</span><div><span class="mono">${money(b.amount)}</span><br><span class="muted">${esc(b.note || '')}</span></div></div>`).join('') : '<p class="muted" style="margin:0;font-size:13px">Broker decisions appear here.</p>'}</div>
  </aside></div>`;
   updateCountdowns();
@@ -400,19 +404,15 @@ function strip({ r, ok, q: qd }, ac) {
   const t = typeOf(ac), bid = D.bids.find(b => b.request_id === r.id), A = D.airports[r.from_icao] || {}, B = D.airports[r.to_icao] || {};
   const deciding = r.status === 'deciding';
   let act;
-  if (!ok) act = esc(whyNot(t, r));
+  if (!ok) act = `<span class="why">${esc(whyNot(t, r))}</span>`;
   else if (bid) act = `<span class="placed">Bid ${kmoney(bid.amount)}</span><span class="cd">decision <span data-cd="${ts(r.decide_at)}"></span></span>`;
   else act = `<button type="button" data-act="bid" data-id="${r.id}">Quote</button><span class="cd">${deciding ? `deciding <span data-cd="${ts(r.decide_at)}"></span>` : `closes <span data-cd="${ts(r.expires_at)}"></span>`}</span>`;
-  return `<article class="strip ${ok ? '' : 'na'}">
- <div class="band ${r.cat}"></div>
- <div class="s-client"><b>${esc(r.client)}</b><span>REQ ${r.id} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span></div>
- <div class="s-route"><div class="codes">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="names">${esc(A.city)} to ${esc(B.city)}</div>${ok && qd.repoNm ? `<div class="repo">+ position ${dist(qd.repoNm)} from ${qd.loc}</div>` : ''}</div>
- <div class="c-dist"><label>Dist</label><span class="v">${dist(r.dist)}</span></div>
- <div class="c-blk"><label>Block</label><span class="v">${hm(blockH(t, r.dist))}</span></div>
- <div class="c-pax"><label>Pax</label><span class="v">${r.pax}</span></div>
- <div class="c-dep"><label>Dep</label><span class="v">${fmtDep(r.dep_at)}</span></div>
- <div class="c-guide"><label>Guide</label><span class="v">${ok ? kmoney(qd.guide) : '—'}</span></div>
- <div class="s-act">${act}</div></article>`;
+  return `<article class="job cat-${r.cat} ${ok ? '' : 'na'}">
+  <div class="where"><span class="cities">${esc(A.city || r.from_icao)} <i>to</i> ${esc(B.city || r.to_icao)}</span>
+   <span class="sub"><b>${r.from_icao} – ${r.to_icao}</b> · ${esc(r.client)} · ${r.pax} passenger${r.pax > 1 ? 's' : ''} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span>
+   ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first</span>` : ''}</div>
+  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at)}</b></span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
+  <div class="act">${act}</div></article>`;
 }
 
 function renderTrips() {
@@ -466,17 +466,17 @@ function drawMap(cv, trip) {
   const la = pts.map(a => a.lat), lo = pts.map(a => a.lon); const minLa = Math.min(...la), maxLa = Math.max(...la), minLo = Math.min(...lo), maxLo = Math.max(...lo);
   const midLat = (minLa + maxLa) / 2, k = Math.cos(midLat * R); const sp = Math.max((maxLo - minLo) * k / W, (maxLa - minLa) / H, 2 / Math.min(W, H)) * 1.45;
   const cx = (minLo + maxLo) / 2, cy = midLat; const X = lon => W / 2 + (lon - cx) * k / sp, Y = lat => H / 2 - (lat - cy) / sp;
-  c.fillStyle = '#0a0f12'; c.fillRect(0, 0, W, H);
-  const step = sp * Math.min(W, H) > 20 ? 10 : sp * Math.min(W, H) > 8 ? 5 : 2; c.strokeStyle = '#18232a'; c.lineWidth = 1; c.font = '10px "IBM Plex Mono",monospace'; c.fillStyle = '#3b4a52';
+  c.fillStyle = '#EEF2F6'; c.fillRect(0, 0, W, H);
+  const step = sp * Math.min(W, H) > 20 ? 10 : sp * Math.min(W, H) > 8 ? 5 : 2; c.strokeStyle = '#DCE2EA'; c.lineWidth = 1; c.font = '10px "DM Mono",monospace'; c.fillStyle = '#8A95A6';
   for (let g = Math.floor((cy - H * sp / 2) / step) * step; g < cy + H * sp / 2; g += step) { const y = Y(g); c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); c.fillText(`${Math.abs(g)}°${g >= 0 ? 'N' : 'S'}`, 4, y - 3) }
   for (let g = Math.floor((cx - W * sp / k / 2) / step) * step; g < cx + W * sp / k / 2; g += step) { const x = X(g); c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); c.fillText(`${Math.abs(g)}°${g >= 0 ? 'E' : 'W'}`, x + 3, H - 5) }
-  D.apList.forEach(a => { const x = X(a.lon), y = Y(a.lat); if (x < 0 || x > W || y < 0 || y > H) return; c.fillStyle = '#34444c'; c.beginPath(); c.arc(x, y, 2, 0, 7); c.fill() });
+  D.apList.forEach(a => { if (a.size === 'small') return; const x = X(a.lon), y = Y(a.lat); if (x < 0 || x > W || y < 0 || y > H) return; c.fillStyle = '#D3DAE3'; c.beginPath(); c.arc(x, y, 2, 0, 7); c.fill() });
   const gc = (A, B, dash, col, w) => { c.save(); c.setLineDash(dash); c.strokeStyle = col; c.lineWidth = w; c.beginPath(); const n = 40; const p1 = [A.lat * R, A.lon * R], p2 = [B.lat * R, B.lon * R]; const d = 2 * Math.asin(Math.sqrt(Math.sin((p2[0] - p1[0]) / 2) ** 2 + Math.cos(p1[0]) * Math.cos(p2[0]) * Math.sin((p2[1] - p1[1]) / 2) ** 2)) || 1e-9; for (let i = 0; i <= n; i++) { const f = i / n; const a = Math.sin((1 - f) * d) / Math.sin(d), b = Math.sin(f * d) / Math.sin(d); const x = a * Math.cos(p1[0]) * Math.cos(p1[1]) + b * Math.cos(p2[0]) * Math.cos(p2[1]), y = a * Math.cos(p1[0]) * Math.sin(p1[1]) + b * Math.cos(p2[0]) * Math.sin(p2[1]), z = a * Math.sin(p1[0]) + b * Math.sin(p2[0]); const lat = Math.atan2(z, Math.hypot(x, y)) / R, lon = Math.atan2(y, x) / R; i ? c.lineTo(X(lon), Y(lat)) : c.moveTo(X(lon), Y(lat)) } c.stroke(); c.restore() };
   const F = D.airports[trip.from_icao], T = D.airports[trip.to_icao], AL = D.airports[alt];
-  if (AL) gc(T, AL, [2, 3], '#4b5a62', 1);
-  gc(F, T, trip.kind === 'ferry' ? [5, 4] : [], trip.kind === 'ferry' ? '#c98a24' : '#f0a83a', 2.5);
-  const lab = (a, col, txt, r) => { const x = X(a.lon), y = Y(a.lat); c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.font = '600 12px "IBM Plex Mono",monospace'; c.fillStyle = '#e3e8ea'; const tw = c.measureText(txt).width; let tx = x + 8; if (tx + tw > W - 4) tx = x - 8 - tw; c.fillText(txt, tx, y - 6) };
-  if (AL) lab(AL, '#6a7a82', alt + ' ALT', 2.5); lab(F, '#f0a83a', trip.from_icao, 4.5); lab(T, '#f0a83a', trip.to_icao, 4.5);
+  if (AL) gc(T, AL, [2, 3], '#8A95A6', 1);
+  gc(F, T, trip.kind === 'ferry' ? [5, 4] : [], trip.kind === 'ferry' ? '#B88A3A' : '#0E1A2B', 2.5);
+  const lab = (a, col, txt, r) => { const x = X(a.lon), y = Y(a.lat); c.fillStyle = col; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill(); c.font = '600 12px "DM Mono",monospace'; c.fillStyle = '#0E1A2B'; const tw = c.measureText(txt).width; let tx = x + 8; if (tx + tw > W - 4) tx = x - 8 - tw; c.fillText(txt, tx, y - 6) };
+  if (AL) { const near = Math.hypot(X(AL.lon) - X(T.lon), Y(AL.lat) - Y(T.lat)) < 40; if (near) { c.fillStyle = '#8A95A6'; c.beginPath(); c.arc(X(AL.lon), Y(AL.lat), 2.5, 0, 7); c.fill() } else lab(AL, '#8A95A6', alt + ' ALT', 2.5) } lab(F, '#8A6526', trip.from_icao, 4.5); lab(T, '#8A6526', trip.to_icao, 4.5);
 }
 
 function renderHangar() {
@@ -515,11 +515,11 @@ async function renderLedger() {
 }
 
 /* ---------- live map ---------- */
-const planeSvg = (hdg, col) => `<svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${hdg}deg)"><path fill="${col}" stroke="#0a0f12" stroke-width=".8" d="M12 2c.8 0 1.3.9 1.3 2v5.2l7.7 4.6v2l-7.7-2.3v4.6l2.2 1.7V21L12 20.1 8.5 21v-1.2l2.2-1.7v-4.6L3 15.8v-2l7.7-4.6V4c0-1.1.5-2 1.3-2z"/></svg>`;
+const planeSvg = (hdg, col) => `<svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${hdg}deg)"><path fill="${col}" stroke="#FFFFFF" stroke-width=".8" d="M12 2c.8 0 1.3.9 1.3 2v5.2l7.7 4.6v2l-7.7-2.3v4.6l2.2 1.7V21L12 20.1 8.5 21v-1.2l2.2-1.7v-4.6L3 15.8v-2l7.7-4.6V4c0-1.1.5-2 1.3-2z"/></svg>`;
 async function renderLive() {
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Live map</h2><p id="liveNote">Pilots flying with the tracker right now. Updates every 15 seconds.</p></div></div><div id="livemap"></div></div>`;
   liveMap = L.map('livemap', { worldCopyJump: true }).setView([48, 4], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(liveMap);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(liveMap);
   liveLayer = L.layerGroup().addTo(liveMap);
   await refreshLive(true);
 }
@@ -530,8 +530,8 @@ async function refreshLive(fit) {
   const bounds = [];
   rows.forEach(p => {
     const t = p.trips, A = t && D.airports[t.from_icao], B = t && D.airports[t.to_icao];
-    if (A && B) L.polyline([[A.lat, A.lon], [p.lat, p.lon], [B.lat, B.lon]], { color: '#f0a83a', weight: 1.5, opacity: .6, dashArray: '4 4' }).addTo(liveLayer);
-    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'plane-icon', html: planeSvg(p.hdg || 0, p.pilot_id === D.uid ? '#f0a83a' : '#6cbfd2'), iconSize: [26, 26], iconAnchor: [13, 13] }) })
+    if (A && B) L.polyline([[A.lat, A.lon], [p.lat, p.lon], [B.lat, B.lon]], { color: '#8A6526', weight: 1.5, opacity: .7, dashArray: '4 4' }).addTo(liveLayer);
+    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: 'plane-icon', html: planeSvg(p.hdg || 0, p.pilot_id === D.uid ? '#B88A3A' : '#0E1A2B'), iconSize: [26, 26], iconAnchor: [13, 13] }) })
       .bindPopup(`<b>${esc(p.pilots?.callsign)}</b> · ${esc(p.pilots?.company)}<br>${t ? `${esc(t.flt)} ${t.from_icao} → ${t.to_icao}<br>` : ''}<span class="mono">${(p.alt || 0).toLocaleString()} ft · ${p.gs || 0} kt · ${esc(p.phase || '')}</span>`).addTo(liveLayer);
     bounds.push([p.lat, p.lon]);
   });
@@ -572,11 +572,11 @@ async function openPirep(id, staff) {
    <div class="btns" style="justify-content:flex-end"><button type="button" class="btn danger" data-act="review" data-id="${p.id}" data-ok="0">Reject</button><button type="button" class="btn pri" data-act="review" data-id="${p.id}" data-ok="1">Accept and pay</button></div>` : `<div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Close</button></div>`}
   </div></div>`;
   const m = L.map('pmap', { attributionControl: true });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(m);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', subdomains: 'abcd', maxZoom: 12 }).addTo(m);
   const path = (p.path || []).map(x => [x[0], x[1]]);
   const A = D.airports[t.from_icao], B = D.airports[t.to_icao];
-  if (A && B) L.polyline([[A.lat, A.lon], [B.lat, B.lon]], { color: '#4b5a62', weight: 1, dashArray: '3 4' }).addTo(m);
-  if (path.length > 1) L.polyline(path, { color: '#f0a83a', weight: 2.5 }).addTo(m);
+  if (A && B) L.polyline([[A.lat, A.lon], [B.lat, B.lon]], { color: '#8A95A6', weight: 1, dashArray: '3 4' }).addTo(m);
+  if (path.length > 1) L.polyline(path, { color: '#8A6526', weight: 3 }).addTo(m);
   const bounds = path.length > 1 ? path : (A && B ? [[A.lat, A.lon], [B.lat, B.lon]] : [[48, 4]]);
   m.fitBounds(bounds, { padding: [30, 30], maxZoom: 9 });
 }
@@ -587,7 +587,7 @@ async function renderPilots() {
   const st = {}; reps.forEach(r => { const s = st[r.pilot_id] ||= { n: 0, h: 0, l: 0, ln: 0 }; s.n++; s.h += +r.block_h || 0; if (r.landing_fpm != null) { s.l += r.landing_fpm; s.ln++ } });
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Pilots</h2><p>Every company flying for ${esc(D.settings.va_name)}, ranked by reputation.</p></div></div>
   <div class="panel tablewrap"><table class="grid"><thead><tr><th>#</th><th>Callsign</th><th>Pilot</th><th>Company</th><th>Reputation</th><th>Flights</th><th>Hours</th><th>Avg landing</th><th>Balance</th></tr></thead><tbody>
-  ${pilots.map((p, i) => { const s = st[p.id] || { n: 0, h: 0, ln: 0 }; return `<tr${p.id === D.uid ? ' style="background:var(--panel2)"' : ''}><td class="n">${i + 1}</td><td class="n">${esc(p.callsign)}${p.is_admin ? ' <span class="tag call">Staff</span>' : ''}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n">${Math.round(p.rep)}</td><td class="n">${s.n}</td><td class="n">${hm(s.h)}</td><td class="n">${s.ln ? Math.round(s.l / s.ln) + ' fpm' : '—'}</td><td class="n">${kmoney(p.cash)}</td></tr>` }).join('')}
+  ${pilots.map((p, i) => { const s = st[p.id] || { n: 0, h: 0, ln: 0 }; return `<tr${p.id === D.uid ? ' style="background:var(--brass-bg)"' : ''}><td class="n">${i + 1}</td><td class="n">${esc(p.callsign)}${p.is_admin ? ' <span class="tag call">Staff</span>' : ''}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n">${Math.round(p.rep)}</td><td class="n">${s.n}</td><td class="n">${hm(s.h)}</td><td class="n">${s.ln ? Math.round(s.l / s.ln) + ' fpm' : '—'}</td><td class="n">${kmoney(p.cash)}</td></tr>` }).join('')}
   </tbody></table></div></div>`;
 }
 
@@ -676,7 +676,7 @@ function openBid(r) {
   <div class="err" id="bidErr"></div>
   <div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="button" class="btn pri" id="sendBid" data-act="sendbid" data-id="${r.id}">Send quote</button></div></div></div>`;
   const inp = $('#bidAmt'), rg = $('#bidRange');
-  const upd = () => { const v = toUsd(parseInt(inp.value.replace(/\D/g, '')) || 0); const m = v - qd.opc; $('#oMargin').textContent = money(m); $('#oMargin').className = m >= 0 ? 'pos' : 'neg'; const o = winOdds(r, ac, v); $('#oWin').textContent = Math.round(o * 100) + '%'; $('#oBar').style.width = o * 100 + '%'; $('#oBar').style.background = o > 0.6 ? 'var(--ok)' : o > 0.3 ? 'var(--amber)' : 'var(--bad)'; $('#sendBid').disabled = v < 100 };
+  const upd = () => { const v = toUsd(parseInt(inp.value.replace(/\D/g, '')) || 0); const m = v - qd.opc; $('#oMargin').textContent = money(m); $('#oMargin').className = m >= 0 ? 'pos' : 'neg'; const o = winOdds(r, ac, v); $('#oWin').textContent = Math.round(o * 100) + '%'; $('#oBar').style.width = o * 100 + '%'; $('#oBar').style.background = o > 0.6 ? 'var(--ok)' : o > 0.3 ? 'var(--brass-light)' : 'var(--bad)'; $('#sendBid').disabled = v < 100 };
   inp.addEventListener('input', () => { rg.value = parseInt(inp.value.replace(/\D/g, '')) || 0; upd() });
   rg.addEventListener('input', () => { inp.value = rg.value; upd() });
   upd(); updateCountdowns(); inp.focus(); inp.select();
@@ -758,4 +758,4 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal()
 window.addEventListener('hashchange', () => { if (!D.me) return; const h = location.hash.slice(1); if (TABS.some(t => t[0] === h) && h !== UI.tab) { if (liveMap) { liveMap.remove(); liveMap = null } UI.tab = h; renderAll() } });
 let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (UI.tab === 'trips' && !$('#modal').children.length) renderTab() }, 200) });
 
-boot().catch(e => { $('#main').innerHTML = `<div class="authwrap"><div class="authcard"><h1>Couldn't start</h1><p>${esc(e.message)}</p></div></div>` });
+boot().catch(e => { $('#main').innerHTML = `<div class="authwrap"><div class="authcard"><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Couldn't start</h1><p>${esc(e.message)}</p></div></div>` });
