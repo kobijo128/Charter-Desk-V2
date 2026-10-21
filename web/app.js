@@ -5,7 +5,11 @@ const CFG = window.CHARTER_CONFIG || {};
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const CURRENCIES = { USD: { sym: '$', rate: 1, name: 'US dollar' }, GBP: { sym: '£', rate: 0.79, name: 'Pound sterling' }, EUR: { sym: '€', rate: 0.92, name: 'Euro' } };
-const PREF_DEFAULTS = { currency: 'USD', weight: 'lb', distance: 'nm', time: 'local' };
+const PREF_DEFAULTS = { currency: 'USD', weight: 'lb', distance: 'nm', time: 'local', sim: 'any' };
+const SIM_NAMES = { MSFS: 'MSFS', P3D: 'P3D', XP: 'X-Plane' };
+const flyable = t => (t.sims || []).length > 0;
+const forMe = t => flyable(t) && (pref('sim') === 'any' || t.sims.includes(pref('sim')));
+const simBadges = t => `<span class="sims">${(t.sims || []).map(x => `<i class="${pref('sim') === x ? 'mine' : ''}">${SIM_NAMES[x]}</i>`).join('')}</span>`;
 let PREFS_OVERRIDE = null; // used on the setup screen before the pilot exists
 const pref = k => (PREFS_OVERRIDE || D.me?.prefs || {})[k] || PREF_DEFAULTS[k];
 const cur = () => CURRENCIES[pref('currency')] || CURRENCIES.USD;
@@ -301,13 +305,14 @@ const SETTINGS_FIELDS = [
   ['currency', 'Currency', [['USD', 'US dollar ($)'], ['GBP', 'Pound sterling (£)'], ['EUR', 'Euro (€)']]],
   ['weight', 'Fuel and payload', [['lb', 'Pounds (lb)'], ['kg', 'Kilograms (kg)']]],
   ['distance', 'Distance', [['nm', 'Nautical miles (nm)'], ['km', 'Kilometres (km)'], ['mi', 'Statute miles (mi)']]],
-  ['time', 'Flight times shown in', [['local', 'Local time at each airport'], ['utc', 'UTC (Zulu)']]]];
+  ['time', 'Flight times shown in', [['local', 'Local time at each airport'], ['utc', 'UTC (Zulu)']]],
+  ['sim', 'Simulator you fly', [['any', 'Several / any'], ['MSFS', 'Microsoft Flight Simulator'], ['P3D', 'Prepar3D'], ['XP', 'X-Plane']]]];
 const settingsFields = (vals, idp) => SETTINGS_FIELDS.map(([k, l, opts]) => `<div class="field"><label for="${idp}${k}">${l}</label><select id="${idp}${k}" data-pref="${k}">${opts.map(([v, t]) => `<option value="${v}" ${vals[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`).join('');
 const readSettings = idp => Object.fromEntries(SETTINGS_FIELDS.map(([k]) => [k, $('#' + idp + k).value]));
 
 async function renderOnboarding() {
   const taken = (await q(sb.from('fleet').select('reg').limit(10000)).catch(() => [])).map(x => x.reg);
-  const starters = D.typeList.filter(t => t.starter).sort((a, b) => a.price_new - b.price_new);
+  const starters = D.typeList.filter(t => t.starter && flyable(t)).sort((a, b) => a.price_new - b.price_new);
   const home0 = D.airports[D.settings.start_home] ? D.settings.start_home : D.apList[0]?.icao;
   const st = { type: starters.find(t => t.code === D.settings.start_type)?.code || starters[0]?.code, regTouched: false, year: null };
   const countryCur = c => ['GB', 'JE', 'GG'].includes(c) ? 'GBP' : EURO.includes(c) ? 'EUR' : 'USD';
@@ -333,8 +338,9 @@ async function renderOnboarding() {
     <p class="hint" style="margin:0">Everyone in the VA trades in the same economy. Currency changes what you see, at fixed game rates: $1 = £0.79 = €0.92. You can change all of these later on your Profile page.</p>
     <div class="err" id="obErr"></div><button class="btn pri" type="submit">Start trading</button></form></div>`;
   const drawTypes = () => {
-    $('#obTypes').innerHTML = starters.map(t => `<button type="button" class="starter" data-type="${t.code}" aria-pressed="${t.code === st.type}">
-      <span class="sh"><b>${esc(t.name)}</b><span class="mono">${t.code}</span></span><span class="muted">${esc(t.cls)}</span>
+    if (!forMe(D.types[st.type])) st.type = (starters.find(forMe) || starters[0]).code;
+    $('#obTypes').innerHTML = starters.slice().sort((a, b) => forMe(b) - forMe(a)).map(t => `<button type="button" class="starter ${forMe(t) ? '' : 'nosim'}" data-type="${t.code}" aria-pressed="${t.code === st.type}" title="${esc(t.sim_note || '')}">
+      <span class="sh"><b>${esc(t.name)}</b><span class="mono">${t.code}</span></span><span class="muted">${esc(t.cls)}</span>${simBadges(t)}
       <span class="specs"><span><label>Seats</label>${t.seats}</span><span><label>Range</label>${dist(t.range_nm)}</span><span><label>Cruise</label>${t.ktas} kt</span><span><label>Earns (new)</label>${kmoney(t.rate)}/h</span></span></button>`).join('');
     $('#obCash').textContent = money(D.settings.start_cash);
     const t = D.types[st.type], yrs = modelYears(t);
@@ -626,15 +632,22 @@ async function renderShop() {
   let cands = [];
   try { await rpc('refresh_candidates'); cands = await q(sb.from('crew_candidates').select('*').eq('pilot_id', D.uid).order('salary_ask')) } catch (e) { }
   const free = D.me.slots - D.fleet.length, slotCost = 60000 * 2 ** (D.me.slots - 2), cash = D.me.cash;
-  UI.shopCat ||= 'light';
-  const list = D.typeList.filter(t => t.category === UI.shopCat).sort((a, b) => a.price_new - b.price_new);
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>New and used, priced by age. Older aircraft cost less but earn lower charter rates. Pay in full, or finance with a 15% deposit over 15 years. Aircraft are delivered to ${D.me.home}. ${free ? `You have ${free} free fleet slot${free > 1 ? 's' : ''}.` : 'All fleet slots are full, so buy a slot first.'}</p></div>
-  <div class="card" style="min-width:min(280px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
-  <div class="bands" role="tablist">${SHOP_CATS.map(([k, l]) => `<button type="button" class="chip" role="tab" data-act="shopcat" data-k="${k}" aria-pressed="${UI.shopCat === k}">${l} · ${D.typeList.filter(t => t.category === k).length}</button>`).join('')}</div>
- <div class="cards">${list.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length, yrs = modelYears(t), oldest = yrs[yrs.length - 1], cheapest = acValue(t, oldest), isNew = t.year_to >= thisYear();
+  UI.shopCat ||= 'all';
+  const mySim = pref('sim'), simOnly = mySim !== 'any' && !UI.shopAllSims;
+  const avail = D.typeList.filter(t => flyable(t) && (!simOnly || t.sims.includes(mySim)));
+  const hiddenN = D.typeList.filter(flyable).length - avail.length;
+  const cats = SHOP_CATS.filter(([k]) => UI.shopCat === 'all' || UI.shopCat === k);
+  const card = t => { const own = D.fleet.filter(a => a.type_code === t.code).length, yrs = modelYears(t), oldest = yrs[yrs.length - 1], cheapest = acValue(t, oldest), isNew = t.year_to >= thisYear(), dep = cheapest * 0.15;
    return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)} · built ${t.year_from}${t.year_to >= thisYear() ? ' to today' : `–${t.year_to}`}${own ? ` · ${own} in fleet` : ''}</p>
+  <div class="simrow">${simBadges(t)}<span class="hint">${esc(t.sim_note || '')}</span></div>
   <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate (new)</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Crew</label><span>${t.crew_req === 1 ? 'Single pilot' : 'Two pilots'}</span></div></div>
-  <div class="foot"><span style="display:flex;flex-direction:column"><span class="price">${isNew ? bigMoney(t.price_new) + ' new' : 'Used only'}</span><span class="hint">Used from ${bigMoney(cheapest)} (${oldest})</span></span><button type="button" class="btn ${free ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free ? 'disabled' : ''}>Choose</button></div></div>` }).join('')}</div></div>
+  <div class="foot"><span style="display:flex;flex-direction:column"><span class="price">${isNew ? bigMoney(t.price_new) + ' new' : 'Used only'}</span><span class="hint">Used from ${bigMoney(cheapest)} (${oldest}) · deposit ${bigMoney(dep)}${cash >= dep ? '' : ` <span class="neg">· need ${bigMoney(dep - cash)} more</span>`}</span></span><button type="button" class="btn ${free && cash >= dep ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free ? 'disabled' : ''}>Choose</button></div></div>` };
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>New and used, priced by age. Older aircraft cost less but earn lower charter rates. Pay in full, or finance with a 15% deposit over 15 years. Aircraft are delivered to ${D.me.home}. ${free ? `You have ${free} free fleet slot${free > 1 ? 's' : ''}.` : 'All fleet slots are full, so buy a slot first.'} Only aircraft you can fly in a simulator are listed.</p></div>
+  <div class="card" style="min-width:min(280px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
+  <div class="bands" role="tablist">${[['all', 'All aircraft'], ...SHOP_CATS].map(([k, l]) => `<button type="button" class="chip" role="tab" data-act="shopcat" data-k="${k}" aria-pressed="${UI.shopCat === k}">${l} · ${avail.filter(t => k === 'all' || t.category === k).length}</button>`).join('')}</div>
+  ${mySim !== 'any' ? `<label class="check" style="display:inline-flex;margin:4px 0 10px"><input type="checkbox" data-act="shopsims" ${simOnly ? 'checked' : ''}> Only aircraft available in ${SIM_NAMES[mySim]}${hiddenN ? ` (${hiddenN} more in other sims)` : ''}</label>` : `<p class="hint" style="margin:4px 0 10px">Set your simulator on the <a href="#profile" data-tab="profile">Profile</a> page to list only aircraft you can fly.</p>`}
+  ${cats.map(([k, l]) => { const list = avail.filter(t => t.category === k).sort((a, b) => a.price_new - b.price_new); if (!list.length) return ''; const lo = Math.min(...list.map(t => acValue(t, modelYears(t).slice(-1)[0]))), hi = Math.max(...list.map(t => t.price_new));
+    return `<div class="shopcat"><div class="shopcathd"><h3>${l}</h3><span class="muted mono">${list.length} type${list.length > 1 ? 's' : ''} · used from ${bigMoney(lo)} · new up to ${bigMoney(hi)}</span></div><div class="cards">${list.map(card).join('')}</div></div>` }).join('') || '<div class="panel empty">No aircraft match. Untick the simulator filter to see the rest.</div>'}</div>
  ${crewShopSection(cands)}
  <div class="section"><div class="sechead"><div><h2>Company upgrades</h2><p>Permanent improvements to how your desk wins and runs work.</p></div></div>
  <div class="cards">${Object.entries(UPG).map(([k, u]) => { const l = upg(k), c = u.cost[l]; return `<div class="card"><div class="hd"><b>${u.name}</b><div class="pips">${u.cost.map((_, i) => `<i class="${i < l ? 'on' : ''}"></i>`).join('')}</div></div><p>${u.desc}</p>
@@ -1108,6 +1121,7 @@ document.addEventListener('click', async e => {
   if (a === 'buyslot') await act(() => rpc('buy_slot'), 'New fleet slot ready.');
   if (a === 'buyac') buyBox(b.dataset.k).catch(err => toast(err.message, 'bad'));
   if (a === 'shopcat') { UI.shopCat = b.dataset.k; renderTab() }
+  if (a === 'shopsims') { UI.shopAllSims = !b.checked; renderTab() }
   if (a === 'planner') { UI.plan = +id; UI.extraMin = null; UI.globeZoom = 1; renderTab(); window.scrollTo(0, 0) }
   if (a === 'planclose') { UI.plan = null; renderTab() }
   if (a === 'extra') { UI.extraMin = +b.dataset.m; renderTab() }

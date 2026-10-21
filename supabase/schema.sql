@@ -466,9 +466,9 @@ begin
       end if;
       perform public.spawn_request(near, null, null);
     end loop;
-    update public.va_settings set last_spawn = now();
+    update public.va_settings set last_spawn = now() where true;
   end if;
-  update public.va_settings set last_maint = now();
+  update public.va_settings set last_maint = now() where true;
 end $$;
 
 -- money and reputation for a finished flight
@@ -915,7 +915,7 @@ begin
   perform require_admin();
   perform now() at time zone p_timezone;  -- rejects unknown time zones
   update va_settings set va_name = p_va_name, timezone = p_timezone, start_cash = p_start_cash,
-         market_base = greatest(4, least(40, p_market_base)), auto_accept = p_auto_accept;
+         market_base = greatest(4, least(40, p_market_base)), auto_accept = p_auto_accept where true;
 end $$;
 
 create or replace function public.admin_set_staff(p_pilot uuid, p_staff boolean)

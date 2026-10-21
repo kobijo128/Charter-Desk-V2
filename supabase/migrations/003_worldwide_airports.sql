@@ -150,9 +150,9 @@ begin
       end if;
       perform public.spawn_request(near, null, null);
     end loop;
-    update public.va_settings set last_spawn = now();
+    update public.va_settings set last_spawn = now() where true;
   end if;
-  update public.va_settings set last_maint = now();
+  update public.va_settings set last_maint = now() where true;
 end $$;
 
 -- spawn_request keeps its signature; it now uses the 4-argument gen_route
