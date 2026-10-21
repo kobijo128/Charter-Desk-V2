@@ -16,7 +16,9 @@ tracker/     Windows flight tracker for MSFS (FSUIPC7), P3D (FSUIPC6) and X-Plan
 1. Create a free project at [supabase.com](https://supabase.com). Pick the region closest to most of your pilots.
 2. Open **SQL Editor**, paste in the whole of `supabase/schema.sql` and run it.
 3. Do the same with `supabase/seed.sql`. This adds the ten aircraft types, client types and 48 starter airports.
-4. Go to **Project Settings → API** and note:
+4. Run each file in `supabase/migrations/` in number order (`002_…`, then `003_…`). These add company setup choices (starter aircraft, registrations, display settings) and worldwide airports with runway lengths.
+5. After you've created your staff account (step 4 below), open **Staff → Airports** and press **Refresh the worldwide list** to load all 7,954 airports. The list comes from [OurAirports](https://ourairports.com/data/), which is public domain.
+6. Go to **Project Settings → API** and note:
    - the **Project URL**
    - the **anon public** key. If you see the newer *publishable* keys, open the **Legacy API keys** tab and use the anon key from there.
 
@@ -47,9 +49,11 @@ Open your site and create the first account. **The first pilot to set up a compa
 - change the VA name, market time zone, starting cash and board size,
 - give other pilots staff access or adjust balances.
 
-### 5. Add airports
+### 5. Airports
 
-The board only offers routes between airports in the database. In **Staff → Airports**, paste CSV rows:
+**Refresh the worldwide list** in Staff → Airports loads about 8,000 airports: every large and medium airport with a runway of at least 2,500 ft, plus smaller airfields with paved runways of 3,500 ft or more. Each aircraft type has a minimum runway, and jobs only go to aircraft that can use both runways. Requests are weighted by airport size and the local time of day where each airport is, and most new requests start within reach of pilots' aircraft.
+
+To add or correct individual airports, paste CSV rows:
 
 ```
 ICAO,Name,City,Country,Latitude,Longitude,Tags

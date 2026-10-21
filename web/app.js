@@ -4,8 +4,32 @@
 const CFG = window.CHARTER_CONFIG || {};
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = n => (n < 0 ? '−$' : '$') + Math.abs(Math.round(n || 0)).toLocaleString('en-US');
-const kmoney = n => n >= 1e6 ? '$' + (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? '$' + (n / 1e3).toFixed(1) + 'k' : money(n);
+const CURRENCIES = { USD: { sym: '$', rate: 1, name: 'US dollar' }, GBP: { sym: '£', rate: 0.79, name: 'Pound sterling' }, EUR: { sym: '€', rate: 0.92, name: 'Euro' } };
+const PREF_DEFAULTS = { currency: 'USD', weight: 'lb', distance: 'nm', time: 'local' };
+let PREFS_OVERRIDE = null; // used on the setup screen before the pilot exists
+const pref = k => (PREFS_OVERRIDE || D.me?.prefs || {})[k] || PREF_DEFAULTS[k];
+const cur = () => CURRENCIES[pref('currency')] || CURRENCIES.USD;
+const toLocal = usd => (usd || 0) * cur().rate;          // game money is stored in US dollars
+const toUsd = local => (local || 0) / cur().rate;
+const money = n => { const v = Math.round(toLocal(n)); return (v < 0 ? '−' : '') + cur().sym + Math.abs(v).toLocaleString('en-US') };
+const kmoney = n => { const v = toLocal(n), a = Math.abs(v), sg = v < 0 ? '−' : ''; return a >= 1e6 ? sg + cur().sym + (a / 1e6).toFixed(2) + 'M' : a >= 1e4 ? sg + cur().sym + (a / 1e3).toFixed(1) + 'k' : money(n) };
+const DIST = { nm: 1, km: 1.852, mi: 1.15078 };
+const dist = nmv => nmv == null ? '—' : `${Math.round(nmv * DIST[pref('distance')]).toLocaleString('en-US')} ${pref('distance')}`;
+const wt = lb => lb == null ? '—' : `${Math.round(pref('weight') === 'kg' ? lb * 0.453592 : lb).toLocaleString('en-US')} ${pref('weight')}`;
+const wtRate = lbh => `${Math.round(pref('weight') === 'kg' ? lbh * 0.453592 : lbh).toLocaleString('en-US')} ${pref('weight')}/h`;
+const REG_RE = /^([A-Z0-9]{1,3}-[A-Z0-9]{2,5}|N[1-9][0-9]{0,4}[A-Z]{0,2})$/;
+const COUNTRY_REG = { JE: 'ZJ-', GG: '2-', GB: 'G-', IE: 'EI-', FR: 'F-', DE: 'D-', CH: 'HB-', AT: 'OE-', NL: 'PH-', BE: 'OO-', ES: 'EC-', PT: 'CS-', IT: 'I-', GR: 'SX-', TR: 'TC-', NO: 'LN-', SE: 'SE-', DK: 'OY-', IS: 'TF-', AE: 'A6-', MA: 'CN-', US: 'N' };
+const EURO = ['IE', 'FR', 'DE', 'AT', 'NL', 'BE', 'ES', 'PT', 'IT', 'GR'];
+function suggestReg(country, prefix, taken) {
+  const p = COUNTRY_REG[country] || 'G-', L = 'ABCDEFGHJKLMNPRSTUVWXYZ', base = (prefix || '').toUpperCase().replace(/[^A-Z]/g, '');
+  const tail = p.length >= 3 ? 3 : 4, rl = n => Array.from({ length: n }, () => L[Math.floor(Math.random() * L.length)]).join('');
+  for (let i = 0; i < 60; i++) {
+    const r = p === 'N' ? 'N' + (100 + Math.floor(Math.random() * 900)) + (base.slice(0, 2) || rl(2))
+      : p + ((i === 0 ? base : base.slice(0, tail - 1) + rl(1)) + rl(tail)).slice(0, tail);
+    if (REG_RE.test(r) && !(taken || []).includes(r)) return r;
+  }
+  return '';
+}
 const pad = n => String(n).padStart(2, '0');
 const hm = h => { const m = Math.round((h || 0) * 60); return `${Math.floor(m / 60)}:${pad(m % 60)}` };
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -35,7 +59,8 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
 
 /* ---------- state ---------- */
 const D = { settings: {}, airports: {}, apList: [], types: {}, clients: [], me: null, fleet: [], requests: [], bids: [], calls: [], trips: [], myPireps: [] };
-const UI = { tab: 'market', band: 'any', showAll: false, sort: 'closing', acId: null, sound: false };
+const UI = { tab: 'market', band: 'any', showAll: false, nearOnly: true, sort: 'closing', acId: null, sound: false };
+const NEAR_NM = 800;
 const TABS = [['market', 'Market'], ['trips', 'Trips'], ['hangar', 'Hangar'], ['shop', 'Shop'], ['live', 'Live map'], ['reports', 'Reports'], ['pilots', 'Pilots'], ['ledger', 'Ledger'], ['profile', 'Profile'], ['staff', 'Staff']];
 try { UI.sound = localStorage.getItem('cd-ringer') === '1'; } catch (e) { }
 let pollTimer = null, liveMap = null, liveLayer = null;
@@ -59,8 +84,11 @@ const blockH = (t, d) => d <= 0 ? 0 : d / t.ktas + 0.33;
 const upg = k => (D.me?.upgrades || {})[k] || 0;
 const opRate = t => t.rate * 0.55 * (1 - 0.05 * upg('crew'));
 const repoFactor = () => 1 - 0.25 * upg('empty');
-const fits = (t, r) => r.dist <= t.range_nm * 0.92 && r.pax <= t.seats;
-const whyNot = (t, r) => r.pax > t.seats ? `${r.pax} pax, ${t.seats} seats` : r.dist > t.range_nm * 0.92 ? 'Beyond range' : '';
+const rwy = icao => D.airports[icao]?.rwy_ft ?? 6000;
+const rwyOk = (t, r) => rwy(r.from_icao) >= t.min_rwy_ft && rwy(r.to_icao) >= t.min_rwy_ft;
+const fits = (t, r) => r.dist <= t.range_nm * 0.92 && r.pax <= t.seats && rwyOk(t, r);
+const whyNot = (t, r) => r.pax > t.seats ? `${r.pax} pax, ${t.seats} seats` : r.dist > t.range_nm * 0.92 ? 'Beyond range' : !rwyOk(t, r) ? 'Runway too short' : '';
+const ft = v => v == null ? '—' : `${Math.round(v).toLocaleString('en-US')} ft`;
 const acById = id => D.fleet.find(a => a.id === id);
 const typeOf = ac => D.types[ac.type_code];
 const queue = ac => D.trips.filter(t => t.aircraft_id === ac.id && (t.status === 'booked' || t.status === 'flying')).sort((a, b) => a.seq - b.seq);
@@ -100,12 +128,14 @@ function plan(trip) {
 }
 
 /* ---------- time ---------- */
+const utc = () => pref('time') === 'utc';
+const shift = ms => utc() ? new Date(ms + new Date(ms).getTimezoneOffset() * 60000) : new Date(ms); // render UTC with local getters
 function fmtDep(ts) {
-  if (!ts) return '—'; const d = new Date(ts), n = new Date(); const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (!ts) return '—'; const d = shift(new Date(ts).getTime()), n = shift(Date.now()); const t = `${pad(d.getHours())}:${pad(d.getMinutes())}${utc() ? 'Z' : ''}`;
   const day = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(n).setHours(0, 0, 0, 0)) / 864e5);
   return day === 0 ? `Today ${t}` : day === 1 ? `Tmrw ${t}` : day === -1 ? `Yday ${t}` : `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })} ${t}`;
 }
-const fmtDate = ts => new Date(ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtDate = ts => shift(new Date(ts).getTime()).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + (utc() ? 'Z' : '');
 function mmss(ms) { ms = Math.max(0, ms); const s = Math.ceil(ms / 1000); return s >= 3600 ? `${Math.floor(s / 3600)}h ${pad(Math.floor(s % 3600 / 60))}m` : `${Math.floor(s / 60)}:${pad(s % 60)}` }
 const ts = v => new Date(v).getTime();
 
@@ -139,10 +169,19 @@ async function boot() {
   pollTimer = setInterval(doPoll, 4000);
   setInterval(() => { clock(); updateCountdowns() }, 1000);
 }
+async function loadAirports() {
+  // Supabase returns at most 1,000 rows per request, so fetch the list in pages
+  const cols = 'icao,name,city,country,lat,lon,tags,active,size,rwy_ft';
+  const first = await sb.from('airports').select(cols, { count: 'exact' }).order('icao').range(0, 999);
+  if (first.error) throw new Error(first.error.message);
+  const pages = Math.ceil((first.count || 0) / 1000), rest = [];
+  for (let i = 1; i < pages; i++) rest.push(q(sb.from('airports').select(cols).order('icao').range(i * 1000, i * 1000 + 999)));
+  return first.data.concat(...(await Promise.all(rest)));
+}
 async function loadStatic() {
   const [settings, aps, types, clients] = await Promise.all([
     q(sb.from('va_settings').select('*').single()),
-    q(sb.from('airports').select('*').order('icao').limit(5000)),
+    loadAirports(),
     q(sb.from('aircraft_types').select('*').order('price')),
     q(sb.from('clients').select('*'))]);
   D.settings = settings; D.apList = aps.filter(a => a.active); D.airports = Object.fromEntries(aps.map(a => [a.icao, a]));
@@ -204,22 +243,74 @@ function renderAuth(mode) {
     boot();
   };
 }
-function renderOnboarding() {
-  const opts = D.apList.map(a => `<option value="${a.icao}" ${a.icao === D.settings.start_home ? 'selected' : ''}>${a.icao} · ${esc(a.city)}</option>`).join('');
-  $('#main').innerHTML = `<div class="authwrap"><form class="authcard" id="obForm">
-    <h1>Found your company</h1><p>You start with ${money(D.settings.start_cash)} and one ${esc(D.types[D.settings.start_type]?.name || 'aircraft')} at your home base.</p>
-    <div class="row2"><div class="field"><label for="obCs">Pilot callsign</label><input id="obCs" maxlength="8" placeholder="ALT001" required></div>
-    <div class="field"><label for="obName">Your name</label><input id="obName" maxlength="40" required></div></div>
-    <div class="field"><label for="obCo">Company name</label><input id="obCo" maxlength="40" placeholder="Jersey Executive Charter" required></div>
-    <div class="row2"><div class="field"><label for="obPx">Flight number prefix</label><input id="obPx" maxlength="3" placeholder="JEC" required></div>
-    <div class="field"><label for="obHome">Home base</label><select id="obHome">${opts}</select></div></div>
+const SETTINGS_FIELDS = [
+  ['currency', 'Currency', [['USD', 'US dollar ($)'], ['GBP', 'Pound sterling (£)'], ['EUR', 'Euro (€)']]],
+  ['weight', 'Fuel and payload', [['lb', 'Pounds (lb)'], ['kg', 'Kilograms (kg)']]],
+  ['distance', 'Distance', [['nm', 'Nautical miles (nm)'], ['km', 'Kilometres (km)'], ['mi', 'Statute miles (mi)']]],
+  ['time', 'Times shown in', [['local', 'My local time'], ['utc', 'UTC (Zulu)']]]];
+const settingsFields = (vals, idp) => SETTINGS_FIELDS.map(([k, l, opts]) => `<div class="field"><label for="${idp}${k}">${l}</label><select id="${idp}${k}" data-pref="${k}">${opts.map(([v, t]) => `<option value="${v}" ${vals[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`).join('');
+const readSettings = idp => Object.fromEntries(SETTINGS_FIELDS.map(([k]) => [k, $('#' + idp + k).value]));
+
+async function renderOnboarding() {
+  const taken = (await q(sb.from('fleet').select('reg').limit(10000)).catch(() => [])).map(x => x.reg);
+  const starters = D.typeList.filter(t => t.starter);
+  const home0 = D.airports[D.settings.start_home] ? D.settings.start_home : D.apList[0]?.icao;
+  const st = { type: starters.find(t => t.code === D.settings.start_type)?.code || starters[0]?.code, regTouched: false };
+  const countryCur = c => ['GB', 'JE', 'GG'].includes(c) ? 'GBP' : EURO.includes(c) ? 'EUR' : 'USD';
+  const startPrefs = { ...PREF_DEFAULTS, currency: countryCur(D.airports[home0]?.country) };
+  PREFS_OVERRIDE = startPrefs;
+  const opts = D.apList.map(a => `<option value="${a.icao}">${esc(a.city)} · ${esc(a.name)}</option>`).join('');
+  $('#main').innerHTML = `<div class="authwrap"><form class="authcard wide" id="obForm" novalidate>
+    <div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and one aircraft of your choice at your home base.</p></div>
+    <h3 class="obh">1 · Pilot and company</h3>
+    <div class="row2"><div class="field"><label for="obCs">Pilot callsign</label><input id="obCs" maxlength="8" placeholder="ALT001" autocomplete="off"></div>
+    <div class="field"><label for="obName">Your name</label><input id="obName" maxlength="40" autocomplete="name"></div></div>
+    <div class="field"><label for="obCo">Company name</label><input id="obCo" maxlength="40" placeholder="Jersey Executive Charter"></div>
+    <div class="row2"><div class="field"><label for="obPx">Flight number prefix</label><input id="obPx" maxlength="3" placeholder="JEC"></div>
+    <div class="field"><label for="obHome">Home base (ICAO)</label><input id="obHome" list="obHomeList" value="${home0}" maxlength="4" autocomplete="off" style="text-transform:uppercase"><datalist id="obHomeList">${opts}</datalist><span class="hint" id="obHomeHint"></span></div></div>
+    <h3 class="obh">2 · Starter aircraft</h3>
+    <div class="starters" id="obTypes"></div>
+    <div class="row2"><div class="field"><label for="obReg">Registration</label><input id="obReg" maxlength="9" autocomplete="off" style="text-transform:uppercase"><span class="hint" id="obRegHint"></span></div>
+    <div class="field"><label>&nbsp;</label><button type="button" class="btn" id="obRegNew">Suggest another</button></div></div>
+    <h3 class="obh">3 · Settings</h3>
+    <div class="row2">${settingsFields(startPrefs, 'obP')}</div>
+    <p class="hint" style="margin:0">Everyone in the VA trades in the same economy. Currency changes what you see, at fixed game rates: $1 = £0.79 = €0.92. You can change all of these later on your Profile page.</p>
     <div class="err" id="obErr"></div><button class="btn pri" type="submit">Start trading</button></form></div>`;
-  $('#obCo').oninput = () => { if (!$('#obPx').dataset.touched) $('#obPx').value = $('#obCo').value.split(/\s+/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 3) };
-  $('#obPx').oninput = () => $('#obPx').dataset.touched = '1';
+  const drawTypes = () => {
+    $('#obTypes').innerHTML = starters.map(t => `<button type="button" class="starter" data-type="${t.code}" aria-pressed="${t.code === st.type}">
+      <span class="sh"><b>${esc(t.name)}</b><span class="mono">${t.code}</span></span><span class="muted">${esc(t.cls)}</span>
+      <span class="specs"><span><label>Seats</label>${t.seats}</span><span><label>Range</label>${dist(t.range_nm)}</span><span><label>Cruise</label>${t.ktas} kt</span><span><label>Earns</label>${kmoney(t.rate)}/h</span></span></button>`).join('');
+    $('#obCash').textContent = money(D.settings.start_cash);
+  };
+  const homeCode = () => $('#obHome').value.trim().toUpperCase();
+  const country = () => D.airports[homeCode()]?.country;
+  const checkHome = () => { const a = D.airports[homeCode()]; $('#obHomeHint').textContent = a ? `${a.name}, ${a.city} · runway ${ft(a.rwy_ft)}` : 'Type an ICAO code or search by city.'; $('#obHomeHint').className = 'hint ' + (a ? 'good' : 'bad'); return !!a };
+  const checkReg = () => { const r = $('#obReg').value.trim().toUpperCase(); const ok = REG_RE.test(r) && !taken.includes(r);
+    $('#obRegHint').textContent = !r ? 'Letters and numbers with a country prefix, like G-ABCD or ZJ-JEC.' : taken.includes(r) ? 'Already used by another pilot.' : ok ? 'Looks good.' : 'Use a country prefix and dash (G-ABCD, ZJ-JEC, D-IABC) or a US N-number (N123AB).';
+    $('#obRegHint').className = 'hint ' + (r && !ok ? 'bad' : r ? 'good' : ''); return ok };
+  const suggest = () => { $('#obReg').value = suggestReg(country(), $('#obPx').value || 'ABC', taken); checkReg() };
+  drawTypes(); suggest(); checkHome();
+  $('#obTypes').onclick = e => { const b = e.target.closest('[data-type]'); if (b) { st.type = b.dataset.type; drawTypes() } };
+  $('#obRegNew').onclick = () => { st.regTouched = false; suggest() };
+  $('#obReg').oninput = () => { st.regTouched = true; checkReg() };
+  $('#obCo').oninput = () => { if (!$('#obPx').dataset.touched) { $('#obPx').value = $('#obCo').value.split(/\s+/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 3); if (!st.regTouched) suggest() } };
+  $('#obPx').oninput = () => { $('#obPx').dataset.touched = '1'; if (!st.regTouched) suggest() };
+  $('#obHome').oninput = () => { if (checkHome()) $('#obHome').onchange() };
+  $('#obHome').onchange = () => { if (!checkHome()) return; $('#obPcurrency').value = countryCur(country()); PREFS_OVERRIDE = readSettings('obP'); drawTypes(); if (!st.regTouched) suggest() };
+  document.querySelectorAll('#obForm [data-pref]').forEach(el => el.onchange = () => { PREFS_OVERRIDE = readSettings('obP'); drawTypes() });
   $('#obForm').onsubmit = async e => {
-    e.preventDefault();
-    try { await rpc('ensure_pilot', { p_callsign: $('#obCs').value, p_name: $('#obName').value, p_company: $('#obCo').value, p_prefix: $('#obPx').value, p_home: $('#obHome').value }); boot() }
-    catch (err) { $('#obErr').textContent = err.message }
+    e.preventDefault(); $('#obErr').textContent = '';
+    const need = [['obCs', 'a callsign'], ['obName', 'your name'], ['obCo', 'a company name'], ['obPx', 'a 3-letter prefix']].find(([k]) => !$('#' + k).value.trim());
+    if (need) { $('#obErr').textContent = `Enter ${need[1]}.`; $('#' + need[0]).focus(); return }
+    if (!checkHome()) { $('#obErr').textContent = 'Choose a home base from the list.'; $('#obHome').focus(); return }
+    if (!checkReg()) { $('#obErr').textContent = 'Fix the registration first.'; $('#obReg').focus(); return }
+    const sa = D.airports[homeCode()], stt = D.types[st.type];
+    if (sa.rwy_ft < stt.min_rwy_ft) { $('#obErr').textContent = `${sa.icao}'s runway is too short for the ${stt.name}. Pick another aircraft or home base.`; return }
+    try {
+      await rpc('ensure_pilot', { p_callsign: $('#obCs').value, p_name: $('#obName').value, p_company: $('#obCo').value, p_prefix: $('#obPx').value,
+        p_home: homeCode(), p_type: st.type, p_reg: $('#obReg').value.trim().toUpperCase(), p_prefs: readSettings('obP') });
+      PREFS_OVERRIDE = null; boot();
+    } catch (err) { $('#obErr').textContent = err.message }
   };
 }
 
@@ -235,7 +326,7 @@ function renderHeader() {
   $('#tabs').innerHTML = TABS.filter(t => t[0] !== 'staff' || D.me.is_admin).map(([k, l]) =>
     `<a href="#${k}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}${counts[k] ? `<span class="ct">${counts[k]}</span>` : ''}</a>`).join('');
 }
-function clock() { const d = new Date(); $('#gClock').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
+function clock() { const d = shift(Date.now()); $('#gClock').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${utc() ? 'Z' : ''}`; $('#gClockLabel').textContent = utc() ? 'UTC' : 'Local time' }
 function updateCountdowns() {
   const now = Date.now();
   document.querySelectorAll('[data-cd]').forEach(e => e.textContent = mmss(+e.dataset.cd - now));
@@ -251,7 +342,7 @@ function renderCall() {
   <div class="who"><div class="phone"><svg viewBox="0 0 24 24" fill="#06242b"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></div>
   <div><b>${esc(c.caller)}</b><div class="muted" style="font-size:12px">${esc(c.client)} · rings off in <span data-cd="${ts(c.expires_at)}"></span></div></div></div>
   <q>${esc(CALL_LINES[c.line % 4](c, A, B))}</q>
-  <div class="mono" style="font-size:13px">${c.from_icao} → ${c.to_icao} · ${c.dist.toLocaleString()} nm · ${fmtDep(c.dep_at)}</div>
+  <div class="mono" style="font-size:13px">${c.from_icao} → ${c.to_icao} · ${dist(c.dist)} · ${fmtDep(c.dep_at)}</div>
   <div style="display:flex;justify-content:space-between;align-items:end;gap:10px;flex-wrap:wrap"><div><div class="muted" style="font-size:11px;font-family:var(--f-disp);letter-spacing:.12em;text-transform:uppercase">Offering</div><div class="offer">${money(c.offer)}</div></div>
   ${el.length > 1 ? `<select class="sel" id="callAc" aria-label="Aircraft">${el.map(a => `<option value="${a.id}">${a.reg} · ${a.type_code} @ ${futureLoc(a)}</option>`).join('')}</select>` : el.length ? `<span class="mono muted" style="font-size:12px">${el[0].reg} @ ${futureLoc(el[0])}</span>` : '<span class="muted" style="font-size:12px">No aircraft can fly this</span>'}</div>
   <div class="btns"><button type="button" class="btn pri" data-act="acceptcall" data-id="${c.id}" ${el.length ? '' : 'disabled'}>Accept job</button><button type="button" class="btn" data-act="declinecall" data-id="${c.id}">Decline</button></div></div>`;
@@ -275,6 +366,8 @@ function renderMarket() {
   let list = D.requests.map(r => ({ r, ok: fits(t, r), q: quote(ac, r) })).filter(x => inBand(blockH(t, x.r.dist)));
   const hidden = list.filter(x => !x.ok).length;
   if (!UI.showAll) list = list.filter(x => x.ok);
+  const far = list.filter(x => x.q.repoNm > NEAR_NM).length;
+  if (UI.nearOnly) list = list.filter(x => x.q.repoNm <= NEAR_NM);
   const sorts = { closing: (a, b) => ts(a.r.decide_at || a.r.expires_at) - ts(b.r.decide_at || b.r.expires_at), value: (a, b) => b.q.guide - a.q.guide, dep: (a, b) => ts(a.r.dep_at) - ts(b.r.dep_at), repo: (a, b) => a.q.repoNm - b.q.repoNm };
   list.sort(sorts[UI.sort]);
   const h = new Date().getHours();
@@ -282,17 +375,18 @@ function renderMarket() {
   const pending = D.bids.filter(b => b.status === 'pending'), recent = D.bids.filter(b => b.status !== 'pending').slice(0, 7);
   $('#main').innerHTML = `<div class="market">
  <aside class="side">
-  <div class="panel"><h3>Bidding with</h3><div class="acpick">${D.fleet.map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${tt.range_nm.toLocaleString()} nm</em></button>` }).join('')}</div></div>
+  <div class="panel"><h3>Bidding with</h3><div class="acpick">${D.fleet.map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${dist(tt.range_nm)}</em></button>` }).join('')}</div></div>
   <div class="panel"><h3>Flight time</h3><div class="bands">${BANDS.map(([k, l]) => `<button type="button" class="chip" data-act="band" data-k="${k}" aria-pressed="${UI.band === k}">${l}</button>`).join('')}</div>
    <p class="muted" style="font-size:12px;margin:10px 0 0">Block time in the ${esc(t.name)}, including taxi and climb.</p></div>
   <div class="panel"><h3>${esc(t.name)}</h3><div class="specs">
-   <div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Range</label><span>${t.range_nm.toLocaleString()} nm</span></div>
+   <div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div>
    <div><label>Seats</label><span>${t.seats}</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div>
-   <div><label>Op. cost</label><span>${kmoney(opRate(t))}/h</span></div><div><label>Fuel burn</label><span>${t.burn.toLocaleString()} lb/h</span></div></div></div>
+   <div><label>Op. cost</label><span>${kmoney(opRate(t))}/h</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div></div></div>
  </aside>
  <section style="min-width:0">
   <div class="boardhead"><div><h2>Request board · ${new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</h2><p>${mood} Every ${esc(D.settings.va_name)} pilot sees this board.</p></div>
-   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="showAll" data-act="showall" ${UI.showAll ? 'checked' : ''}> Show requests this aircraft can't fly${hidden && !UI.showAll ? ` (${hidden})` : ''}</label>
+   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><label class="check"><input type="checkbox" id="nearOnly" data-act="nearonly" ${UI.nearOnly ? 'checked' : ''}> Only within ${dist(NEAR_NM)} of ${ac.reg}${far && UI.nearOnly ? ` (${far} further away)` : ''}</label>
+   <label class="check"><input type="checkbox" id="showAll" data-act="showall" ${UI.showAll ? 'checked' : ''}> Show requests this aircraft can't fly${hidden && !UI.showAll ? ` (${hidden})` : ''}</label>
    <select class="sel" id="sortSel" data-act="sort" aria-label="Sort requests">${[['closing', 'Closing soonest'], ['value', 'Highest value'], ['dep', 'Earliest departure'], ['repo', 'Closest to aircraft']].map(([k, l]) => `<option value="${k}" ${UI.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
   <div class="strips">${list.length ? list.map(x => strip(x, ac)).join('') : `<div class="empty">No requests in this time band for ${ac.reg} right now. New requests arrive every minute or so.</div>`}</div>
  </section>
@@ -312,8 +406,8 @@ function strip({ r, ok, q: qd }, ac) {
   return `<article class="strip ${ok ? '' : 'na'}">
  <div class="band ${r.cat}"></div>
  <div class="s-client"><b>${esc(r.client)}</b><span>REQ ${r.id} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span></div>
- <div class="s-route"><div class="codes">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="names">${esc(A.city)} to ${esc(B.city)}</div>${ok && qd.repoNm ? `<div class="repo">+ position ${qd.repoNm} nm from ${qd.loc}</div>` : ''}</div>
- <div class="c-dist"><label>Dist</label><span class="v">${r.dist.toLocaleString()} nm</span></div>
+ <div class="s-route"><div class="codes">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="names">${esc(A.city)} to ${esc(B.city)}</div>${ok && qd.repoNm ? `<div class="repo">+ position ${dist(qd.repoNm)} from ${qd.loc}</div>` : ''}</div>
+ <div class="c-dist"><label>Dist</label><span class="v">${dist(r.dist)}</span></div>
  <div class="c-blk"><label>Block</label><span class="v">${hm(blockH(t, r.dist))}</span></div>
  <div class="c-pax"><label>Pax</label><span class="v">${r.pax}</span></div>
  <div class="c-dep"><label>Dep</label><span class="v">${fmtDep(r.dep_at)}</span></div>
@@ -343,17 +437,18 @@ function tripCard(trip) {
   <div><div class="route">${trip.from_icao}<i>▸</i>${trip.to_icao}</div><div class="places">${esc(A?.name)}, ${esc(A?.city)} to ${esc(B?.name)}, ${esc(B?.city)}${ferry ? ' · empty' : ` · ${esc(trip.caller ? trip.caller + ' (' + trip.client + ')' : trip.client)}`}</div></div>
   <div class="grid4">
    <div class="kv"><label>${ferry ? 'Position by' : 'Departs'}</label><span>${fmtDep(trip.dep_at)}</span></div>
-   <div class="kv"><label>Distance</label><span>${trip.dist.toLocaleString()} nm</span></div>
+   <div class="kv"><label>Distance</label><span>${dist(trip.dist)}</span></div>
    <div class="kv"><label>Est. block</label><span>${hm(p.bh)}</span></div>
    <div class="kv"><label>Cruise</label><span>FL${p.fl}</span></div>
-   <div class="kv"><label>Passengers</label><span>${trip.pax} · ${p.payload.toLocaleString()} lb</span></div>
-   <div class="kv"><label>Block fuel</label><span>${p.block.toLocaleString()} lb</span></div>
-   <div class="kv"><label>Alternate</label><span>${p.alt} · ${p.altd} nm</span></div>
+   <div class="kv"><label>Passengers</label><span>${trip.pax} · ${wt(p.payload)}</span></div>
+   <div class="kv"><label>Block fuel</label><span>${wt(p.block)}</span></div>
+   <div class="kv"><label>Alternate</label><span>${p.alt} · ${dist(p.altd)}</span></div>
+   <div class="kv"><label>Runways</label><span>${ft(rwy(trip.from_icao))} / ${ft(rwy(trip.to_icao))}</span></div>
    <div class="kv"><label>Course</label><span>${String(Math.round(brg(trip.from_icao, trip.to_icao))).padStart(3, '0')}°</span></div>
    <div class="kv"><label>Revenue</label><span>${money(trip.price)}</span></div>
    <div class="kv"><label>Est. op. cost</label><span>${money(p.opc)}</span></div>
    <div class="kv"><label>Est. profit</label><span class="${profit >= 0 ? 'pos' : 'neg'}">${money(profit)}</span></div>
-   <div class="kv"><label>Fuel split</label><span style="font-size:12px">Trip ${p.tripFuel.toLocaleString()} · Res ${p.res.toLocaleString()}</span></div>
+   <div class="kv"><label>Fuel split</label><span style="font-size:12px">Trip ${wt(p.tripFuel)} · Res ${wt(p.res)}</span></div>
   </div>
   <div class="btns">
    <a class="btn" href="${sbUrl}" target="_blank" rel="noopener">Plan in SimBrief ↗</a>
@@ -390,8 +485,9 @@ function renderHangar() {
   <form class="panel" id="coForm" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:200px"><label for="coInput">Company name</label><input id="coInput" maxlength="40" value="${esc(D.me.company)}"></div>
    <div class="field" style="width:120px"><label for="pxInput">Flight prefix</label><input id="pxInput" maxlength="3" value="${esc(D.me.prefix)}"></div><button class="btn pri" type="submit">Save</button></form>
   <div class="cards">${D.fleet.map(a => { const t = typeOf(a), n = queue(a).length; return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}</p>
-  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div><div><label>Legs queued</label><span>${n}</span></div><div><label>Seats / range</label><span>${t.seats} / ${t.range_nm.toLocaleString()} nm</span></div></div>
+  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div><div><label>Legs queued</label><span>${n}</span></div><div><label>Seats / range</label><span>${t.seats} / ${dist(t.range_nm)}</span></div></div>
   <div class="foot">${a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
+  <button type="button" class="btn" data-act="rereg" data-id="${a.id}">Change registration</button>
   ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" ${n ? 'disabled title="Finish or cancel its trips first"' : ''}>Sell ${kmoney(Math.round(t.price * 0.6))}</button>` : ''}</div></div>` }).join('')}
   ${Array.from({ length: Math.max(0, D.me.slots - used) }, () => `<div class="card" style="border-style:dashed;justify-content:center;align-items:center;text-align:center;min-height:180px"><p>Empty slot</p><a class="btn" href="#shop" data-tab="shop">Add an aircraft</a></div>`).join('')}</div></div>`;
   $('#coForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('update_company', { p_company: $('#coInput').value, p_prefix: $('#pxInput').value }), 'Company details saved.') };
@@ -402,7 +498,7 @@ function renderShop() {
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>Each aircraft takes a fleet slot and is delivered to your home base, ${D.me.home}. Prices are the lease deposit. ${free ? `You have ${free} free slot${free > 1 ? 's' : ''}.` : 'All slots are full, so buy a slot first.'}</p></div>
   <div class="card" style="min-width:min(300px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
  <div class="cards">${D.typeList.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length; return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)}${own ? ` · ${own} in fleet` : ''}</p>
-  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${t.range_nm.toLocaleString()} nm</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div></div>
+  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div></div>
   <div class="foot"><span class="price">${kmoney(t.price)}</span><button type="button" class="btn ${free && cash >= t.price ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free || cash < t.price ? 'disabled' : ''}>Add to fleet</button></div></div>` }).join('')}</div></div>
  <div class="section"><div class="sechead"><div><h2>Company upgrades</h2><p>Permanent improvements to how your desk wins and runs work.</p></div></div>
  <div class="cards">${Object.entries(UPG).map(([k, u]) => { const l = upg(k), c = u.cost[l]; return `<div class="card"><div class="hd"><b>${u.name}</b><div class="pips">${u.cost.map((_, i) => `<i class="${i < l ? 'on' : ''}"></i>`).join('')}</div></div><p>${u.desc}</p>
@@ -414,7 +510,7 @@ async function renderLedger() {
   const flown = await q(sb.from('pireps').select('block_h,dist_flown,revenue').eq('pilot_id', D.uid).eq('status', 'accepted').limit(5000));
   const sum = (a, k) => a.reduce((s, x) => s + (+x[k] || 0), 0);
   $('#main').innerHTML = `<div class="section"><h2>Ledger</h2>
- <div class="stats">${[['Balance', money(D.me.cash)], ['Flights flown', flown.length], ['Block hours', hm(sum(flown, 'block_h'))], ['Miles flown', sum(flown, 'dist_flown').toLocaleString() + ' nm'], ['Revenue', money(sum(flown, 'revenue'))], ['Reputation', Math.round(D.me.rep)]].map(([l, v]) => `<div class="panel kv"><label>${l}</label><span style="font-size:18px">${v}</span></div>`).join('')}</div>
+ <div class="stats">${[['Balance', money(D.me.cash)], ['Flights flown', flown.length], ['Block hours', hm(sum(flown, 'block_h'))], ['Distance flown', dist(sum(flown, 'dist_flown'))], ['Revenue', money(sum(flown, 'revenue'))], ['Reputation', Math.round(D.me.rep)]].map(([l, v]) => `<div class="panel kv"><label>${l}</label><span style="font-size:18px">${v}</span></div>`).join('')}</div>
  <div class="panel tablewrap"><table class="ledger"><tbody>${rows.map(e => `<tr><td class="t">${fmtDate(e.at)}</td><td>${esc(e.text)}</td><td class="a" style="color:${e.amount >= 0 ? 'var(--ok)' : 'var(--bad)'}">${e.amount ? money(e.amount) : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
@@ -456,7 +552,7 @@ async function openPirep(id, staff) {
   const p = await q(sb.from('pireps').select('*,trips(flt,from_icao,to_icao,kind,client,price,dist),pilots(callsign,name,company)').eq('id', id).single());
   const t = p.trips || {};
   const checkNames = { departure: 'Departure airport', arrival: 'Arrival airport', aircraft: 'Aircraft type', speed: 'Plausible speed', crash: 'No crash', slew: 'No slew', sim_rate: 'Normal sim rate', overspeed: 'No overspeed below 10,000 ft' };
-  const checks = Object.entries(p.checks || {}).map(([k, v]) => `<span class="${v.ok ? 'check-ok' : 'check-bad'}">${v.ok ? '✓' : '✗'} ${checkNames[k] || k}${k === 'departure' || k === 'arrival' ? ` (${v.nm} nm)` : ''}${k === 'sim_rate' && !v.ok ? ` ×${v.max}` : ''}${k === 'overspeed' && !v.ok ? ` ${v.seconds}s` : ''}</span>`).join('');
+  const checks = Object.entries(p.checks || {}).map(([k, v]) => `<span class="${v.ok ? 'check-ok' : 'check-bad'}">${v.ok ? '✓' : '✗'} ${checkNames[k] || k}${k === 'departure' || k === 'arrival' ? ` (${dist(v.nm)})` : ''}${k === 'sim_rate' && !v.ok ? ` ×${v.max}` : ''}${k === 'overspeed' && !v.ok ? ` ${v.seconds}s` : ''}</span>`).join('');
   $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Flight report" style="width:min(720px,100%)">
   <div><h3 style="margin:0 0 4px">${esc(t.flt)} · ${esc(p.pilots?.callsign)} · ${esc(p.pilots?.company)}</h3><div class="route">${t.from_icao}<i>▸</i>${p.arr_icao}${p.arr_icao !== t.to_icao ? ` <span class="muted" style="font-size:14px">planned ${t.to_icao}</span>` : ''}</div>
   <div class="muted" style="font-size:13px">${esc(p.sim || '')} · ${esc(p.aircraft_title || '')} · <span class="tag ${p.status}">${p.status}</span></div></div>
@@ -465,10 +561,10 @@ async function openPirep(id, staff) {
    <div class="kv"><label>Block off</label><span>${new Date(p.block_off).toISOString().slice(11, 16)}Z</span></div>
    <div class="kv"><label>Block on</label><span>${new Date(p.block_on).toISOString().slice(11, 16)}Z</span></div>
    <div class="kv"><label>Block / air</label><span>${hm(p.block_h)} / ${p.air_h != null ? hm(p.air_h) : '—'}</span></div>
-   <div class="kv"><label>Distance flown</label><span>${p.dist_flown ?? '—'} nm</span></div>
+   <div class="kv"><label>Distance flown</label><span>${dist(p.dist_flown)}</span></div>
    <div class="kv"><label>Landing</label><span>${p.landing_fpm ?? '—'} fpm</span></div>
    <div class="kv"><label>G / bounces</label><span>${p.landing_g ?? '—'} / ${p.bounces}</span></div>
-   <div class="kv"><label>Fuel used</label><span>${p.fuel_used_lb != null ? Math.round(p.fuel_used_lb).toLocaleString() + ' lb' : '—'}</span></div>
+   <div class="kv"><label>Fuel used</label><span>${wt(p.fuel_used_lb)}</span></div>
    <div class="kv"><label>Net</label><span class="${(p.net || 0) >= 0 ? 'pos' : 'neg'}">${p.net == null ? '—' : money(p.net)}</span></div></div>
   <div class="checks">${checks}</div>
   ${p.review_note ? `<div class="note">${esc(p.review_note)}</div>` : ''}
@@ -509,7 +605,12 @@ async function renderProfile() {
    <div class="field"><label>Your tracker setup code</label><div class="code" id="setupCode">${code}</div></div>
    <div class="btns"><button type="button" class="btn" data-act="copycode">Copy setup code</button><button type="button" class="btn danger" data-act="rotatekey">Make a new code</button></div>
    <p class="muted" style="margin:0;font-size:12.5px">The code lets the tracker file flights as you. Keep it private. Making a new code stops the old one working.</p></div></div>
+  <div class="section"><h2>Settings</h2><form class="panel" id="prefForm" style="display:flex;flex-direction:column;gap:12px">
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">${settingsFields({ ...PREF_DEFAULTS, ...(D.me.prefs || {}) }, 'pf')}</div>
+   <p class="hint" style="margin:0">Currency changes what you see. Everyone trades in one VA economy, converted at fixed game rates: $1 = £0.79 = €0.92.</p>
+   <div class="btns"><button class="btn pri" type="submit">Save settings</button></div></form></div>
   <div class="section"><h2>Account</h2><div class="panel kv" style="display:flex;gap:28px;flex-wrap:wrap"><div><label>Callsign</label><span>${esc(D.me.callsign)}</span></div><div><label>Name</label><span>${esc(D.me.name)}</span></div><div><label>Home base</label><span>${D.me.home}</span></div><div><label>Joined</label><span>${new Date(D.me.created_at).toLocaleDateString('en-GB')}</span></div></div></div>`;
+  $('#prefForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('update_prefs', { p_prefs: readSettings('pf') }), 'Settings saved.'); clock() };
 }
 
 /* ---------- staff ---------- */
@@ -526,19 +627,27 @@ async function renderStaff() {
   <div class="section"><h2>VA settings</h2><form class="panel" id="setForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end">
    <div class="field"><label for="sName">VA name</label><input id="sName" value="${esc(s.va_name)}"></div>
    <div class="field"><label for="sTz">Market time zone</label><input id="sTz" value="${esc(s.timezone)}"></div>
-   <div class="field"><label for="sCash">New pilot starting cash</label><input id="sCash" type="number" value="${s.start_cash}"></div>
+   <div class="field"><label for="sCash">New pilot starting cash (USD)</label><input id="sCash" type="number" value="${s.start_cash}"></div>
    <div class="field"><label for="sBase">Base board size</label><input id="sBase" type="number" min="4" max="40" value="${s.market_base}"></div>
    <label class="check"><input type="checkbox" id="sAuto" ${s.auto_accept ? 'checked' : ''}> Accept clean reports automatically</label>
    <button class="btn pri" type="submit">Save settings</button></form></div>
 
-  <div class="section"><div class="sechead"><div><h2>Airports</h2><p>${D.apList.length} active airports feed the request board. Paste CSV rows to add or update many at once: ICAO, name, city, country, latitude, longitude, tags (biz, leisure, ski, long, separated by spaces).</p></div></div>
-   <form class="panel" id="apForm" style="display:flex;flex-direction:column;gap:10px"><textarea class="ta" id="apCsv" placeholder="LFKC,Calvi Sainte-Catherine,Calvi,FR,42.5308,8.7933,leisure"></textarea><div class="btns"><button class="btn pri" type="submit">Import airports</button></div><div class="err" id="apErr"></div></form></div>
+  <div class="section"><div class="sechead"><div><h2>Airports</h2><p>${D.apList.length.toLocaleString('en-US')} active airports feed the request board. The worldwide list comes from OurAirports (public domain); refresh it to pick up any runway or position changes. Paste CSV rows to add or update many at once: ICAO, name, city, country, latitude, longitude, tags (biz, leisure, ski, long, separated by spaces).</p></div></div>
+   <form class="panel" id="apForm" style="display:flex;flex-direction:column;gap:10px"><textarea class="ta" id="apCsv" placeholder="LFKC,Calvi Sainte-Catherine,Calvi,FR,42.5308,8.7933,leisure"></textarea><div class="btns"><button class="btn pri" type="submit">Import airports</button><button class="btn" type="button" id="apWorld">Refresh the worldwide list</button></div><div class="err" id="apErr"></div></form></div>
 
   <div class="section"><h2>Pilots</h2><div class="panel tablewrap"><table class="grid"><thead><tr><th>Callsign</th><th>Name</th><th>Company</th><th>Balance</th><th>Rep</th><th>Staff</th><th>Adjust</th></tr></thead><tbody>
   ${pilots.map(p => `<tr><td class="n">${esc(p.callsign)}</td><td>${esc(p.name)}</td><td>${esc(p.company)}</td><td class="n">${money(p.cash)}</td><td class="n">${Math.round(p.rep)}</td>
    <td><label class="check"><input type="checkbox" data-act="staff" data-id="${p.id}" ${p.is_admin ? 'checked' : ''} ${p.id === D.uid ? 'disabled' : ''}> Staff</label></td>
    <td><button type="button" class="btn" data-act="adjust" data-id="${p.id}" data-cs="${esc(p.callsign)}">Adjust</button></td></tr>`).join('')}</tbody></table></div></div>`;
   $('#setForm').onsubmit = async e => { e.preventDefault(); await act(async () => { await rpc('admin_settings', { p_va_name: $('#sName').value, p_timezone: $('#sTz').value, p_start_cash: +$('#sCash').value, p_market_base: +$('#sBase').value, p_auto_accept: $('#sAuto').checked }); await loadStatic() }, 'Settings saved.') };
+  $('#apWorld').onclick = async () => {
+    $('#apErr').textContent = 'Loading the worldwide list…';
+    try {
+      const rows = await fetch('data/airports.json').then(r => { if (!r.ok) throw new Error('Couldn\'t load data/airports.json'); return r.json() });
+      let n = 0; for (let i = 0; i < rows.length; i += 1000) { n += await rpc('admin_import_airports', { p_rows: rows.slice(i, i + 1000) }); $('#apErr').textContent = `Imported ${n.toLocaleString('en-US')} of ${rows.length.toLocaleString('en-US')}…` }
+      $('#apErr').textContent = ''; toast(`Airport list refreshed: ${n.toLocaleString('en-US')} airports.`, 'ok'); await loadStatic(); renderTab();
+    } catch (err) { $('#apErr').textContent = err.message }
+  };
   $('#apForm').onsubmit = async e => {
     e.preventDefault(); const lines = $('#apCsv').value.split(/\r?\n/).map(l => l.trim()).filter(Boolean); let n = 0; $('#apErr').textContent = '';
     for (const line of lines) {
@@ -557,9 +666,9 @@ function openBid(r) {
   $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Quote for request">
   <div><h3 style="margin:0 0 4px">Quote · REQ ${r.id} · ${esc(r.client)}</h3><div class="route">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="muted" style="font-size:13px">${esc(D.airports[r.from_icao]?.city)} to ${esc(D.airports[r.to_icao]?.city)} · ${r.pax} pax · departs ${fmtDep(r.dep_at)}</div></div>
   <div class="grid4"><div class="kv"><label>Aircraft</label><span>${ac.reg}</span></div><div class="kv"><label>Block</label><span>${hm(qd.bh)}</span></div>
-   <div class="kv"><label>Positioning</label><span>${qd.repoNm ? `${qd.repoNm} nm · ${kmoney(qd.repoCost)}` : 'None'}</span></div><div class="kv"><label>Op. cost</label><span>${kmoney(qd.opc)}</span></div></div>
-  <div class="field"><label for="bidAmt">Your price</label><div class="amount"><span>$</span><input id="bidAmt" inputmode="numeric" value="${qd.guide}"></div>
-   <input type="range" id="bidRange" min="${Math.round(qd.guide * 0.6 / 100) * 100}" max="${Math.round(qd.fair * 1.6 / 100) * 100}" step="100" value="${qd.guide}" aria-label="Adjust price">
+   <div class="kv"><label>Positioning</label><span>${qd.repoNm ? `${dist(qd.repoNm)} · ${kmoney(qd.repoCost)}` : 'None'}</span></div><div class="kv"><label>Op. cost</label><span>${kmoney(qd.opc)}</span></div></div>
+  <div class="field"><label for="bidAmt">Your price (${pref('currency')})</label><div class="amount"><span>${cur().sym}</span><input id="bidAmt" inputmode="numeric" value="${Math.round(toLocal(qd.guide) / 100) * 100}"></div>
+   <input type="range" id="bidRange" min="${Math.round(toLocal(qd.guide) * 0.6 / 100) * 100}" max="${Math.round(toLocal(qd.fair) * 1.6 / 100) * 100}" step="100" value="${Math.round(toLocal(qd.guide) / 100) * 100}" aria-label="Adjust price">
    <div style="display:flex;justify-content:space-between;font-size:11.5px;flex-wrap:wrap;gap:6px" class="muted mono"><span>Market rate ${kmoney(qd.guide * 0.95)}–${kmoney(qd.guide * 1.1)}${qd.repoNm ? `; outside operators may not need to position` : ''}</span><span>${r.npc} outside operators${r.player_bids ? ` + ${r.player_bids} VA pilot${r.player_bids > 1 ? 's' : ''}` : ''}</span></div></div>
   <div class="odds"><div class="kv"><label>Margin</label><span id="oMargin"></span></div><div class="kv"><label>Est. win chance</label><span id="oWin"></span></div><div class="kv"><label>Decision in</label><span>${r.decide_at ? `<span data-cd="${ts(r.decide_at)}"></span>` : BIDWAIT[Math.min(3, upg('fast'))] + 's'}</span></div></div>
   <div class="oddsbar"><i id="oBar"></i></div>
@@ -567,10 +676,21 @@ function openBid(r) {
   <div class="err" id="bidErr"></div>
   <div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="button" class="btn pri" id="sendBid" data-act="sendbid" data-id="${r.id}">Send quote</button></div></div></div>`;
   const inp = $('#bidAmt'), rg = $('#bidRange');
-  const upd = () => { const v = parseInt(inp.value.replace(/\D/g, '')) || 0; const m = v - qd.opc; $('#oMargin').textContent = money(m); $('#oMargin').className = m >= 0 ? 'pos' : 'neg'; const o = winOdds(r, ac, v); $('#oWin').textContent = Math.round(o * 100) + '%'; $('#oBar').style.width = o * 100 + '%'; $('#oBar').style.background = o > 0.6 ? 'var(--ok)' : o > 0.3 ? 'var(--amber)' : 'var(--bad)'; $('#sendBid').disabled = v < 100 };
+  const upd = () => { const v = toUsd(parseInt(inp.value.replace(/\D/g, '')) || 0); const m = v - qd.opc; $('#oMargin').textContent = money(m); $('#oMargin').className = m >= 0 ? 'pos' : 'neg'; const o = winOdds(r, ac, v); $('#oWin').textContent = Math.round(o * 100) + '%'; $('#oBar').style.width = o * 100 + '%'; $('#oBar').style.background = o > 0.6 ? 'var(--ok)' : o > 0.3 ? 'var(--amber)' : 'var(--bad)'; $('#sendBid').disabled = v < 100 };
   inp.addEventListener('input', () => { rg.value = parseInt(inp.value.replace(/\D/g, '')) || 0; upd() });
   rg.addEventListener('input', () => { inp.value = rg.value; upd() });
   upd(); updateCountdowns(); inp.focus(); inp.select();
+}
+async function regBox(title, body, label, exceptId, fn) {
+  const taken = (await q(sb.from('fleet').select('id,reg').limit(10000)).catch(() => [])).filter(x => x.id !== exceptId).map(x => x.reg);
+  const sug = suggestReg(D.airports[D.me.home]?.country, D.me.prefix, taken);
+  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><form class="modal" id="regForm" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h2>${esc(title)}</h2><p class="muted" style="margin:0">${body}</p>
+   <div class="field"><label for="rgReg">Registration</label><input id="rgReg" maxlength="9" value="${sug}" autocomplete="off" style="text-transform:uppercase"><span class="hint" id="rgHint"></span></div>
+   <div class="err" id="rgErr"></div><div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="submit" class="btn pri">${esc(label)}</button></div></form></div>`;
+  const chk = () => { const r = $('#rgReg').value.trim().toUpperCase(), ok = REG_RE.test(r) && !taken.includes(r);
+    $('#rgHint').textContent = taken.includes(r) ? 'Already used in the VA.' : ok ? 'Looks good.' : 'Use a country prefix and dash (G-ABCD, ZJ-JEC) or a US N-number (N123AB).'; $('#rgHint').className = 'hint ' + (ok ? 'good' : 'bad'); return ok };
+  $('#rgReg').oninput = chk; chk(); $('#rgReg').focus(); $('#rgReg').select();
+  $('#regForm').onsubmit = async e => { e.preventDefault(); if (!chk()) return; try { await fn($('#rgReg').value.trim().toUpperCase()); closeModal(); await afterChange() } catch (err) { $('#rgErr').textContent = err.message } };
 }
 function confirmBox(title, body, label, fn) {
   $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><h2>${esc(title)}</h2><div class="muted">${body}</div><div class="err" id="cfErr"></div><div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Keep it</button><button type="button" class="btn pri" id="cfOk">${esc(label)}</button></div></div></div>`;
@@ -597,7 +717,7 @@ document.addEventListener('click', async e => {
   if (a === 'band') { UI.band = b.dataset.k; renderTab() }
   if (a === 'bid') { const r = D.requests.find(x => x.id === +id); if (r) openBid(r) }
   if (a === 'sendbid') {
-    const v = parseInt($('#bidAmt').value.replace(/\D/g, '')) || 0;
+    const v = Math.round(toUsd(parseInt($('#bidAmt').value.replace(/\D/g, '')) || 0));
     try { await rpc('place_bid', { p_request: +id, p_aircraft: active().id, p_amount: v }); closeModal(); toast(`Quote of ${money(v)} sent.`, ''); await afterChange() }
     catch (err) { $('#bidErr').textContent = err.message }
   }
@@ -605,13 +725,16 @@ document.addEventListener('click', async e => {
   if (a === 'declinecall') { await act(() => rpc('decline_call', { p_call: +id })); $('#call').dataset.id = '' }
   if (a === 'copyplan') {
     const tr = D.trips.find(x => x.id === +id), p = plan(tr), ac = p.ac;
-    const txt = `${tr.flt}  ${ac.reg} (${ac.type_code})\n${tr.from_icao} → ${tr.to_icao}  ALTN ${p.alt}\nDEP ${fmtDep(tr.dep_at)}  PAX ${tr.pax}  PAYLOAD ${p.payload} lb\nDIST ${tr.dist} nm  FL${p.fl}  EST BLOCK ${hm(p.bh)}\nFUEL trip ${p.tripFuel} / altn ${p.altFuel} / res ${p.res} / taxi ${p.taxi} = ${p.block} lb`;
+    const txt = `${tr.flt}  ${ac.reg} (${ac.type_code})\n${tr.from_icao} → ${tr.to_icao}  ALTN ${p.alt}\nDEP ${fmtDep(tr.dep_at)}  PAX ${tr.pax}  PAYLOAD ${wt(p.payload)}\nDIST ${dist(tr.dist)}  FL${p.fl}  EST BLOCK ${hm(p.bh)}\nFUEL trip ${wt(p.tripFuel)} / altn ${wt(p.altFuel)} / res ${wt(p.res)} / taxi ${wt(p.taxi)} = ${wt(p.block)}`;
     try { await navigator.clipboard.writeText(txt); toast('Flight plan copied.', 'ok') } catch (_) { confirmBox('Flight plan', `<pre class="code" style="white-space:pre-wrap">${esc(txt)}</pre>`, 'Done', async () => { }) }
   }
   if (a === 'outsource') confirmBox('Use a contract crew?', `A contract crew positions the aircraft for ${money(+b.dataset.cost)}. You won't need to fly this leg.`, 'Pay and position', () => rpc('outsource_ferry', { p_trip: +id }));
   if (a === 'cancel') { const tr = D.trips.find(x => x.id === +id); confirmBox(`Cancel ${tr.flt}?`, `${esc(tr.client)} will need another operator. You'll pay a ${money(Math.round(tr.price * 0.2))} cancellation fee and lose 5 reputation.`, 'Cancel trip', () => rpc('cancel_trip', { p_trip: +id })) }
   if (a === 'buyslot') await act(() => rpc('buy_slot'), 'New fleet slot ready.');
-  if (a === 'buyac') await act(() => rpc('buy_aircraft', { p_type: b.dataset.k }), `${D.types[b.dataset.k].name} delivered to ${D.me.home}.`);
+  if (a === 'buyac') regBox(`Add a ${D.types[b.dataset.k].name}`, `The lease deposit is ${money(D.types[b.dataset.k].price)}. It will be delivered to ${D.me.home}.`, 'Add to fleet', null,
+    async reg => { await rpc('buy_aircraft', { p_type: b.dataset.k, p_reg: reg }); toast(`${D.types[b.dataset.k].name} ${reg} delivered to ${D.me.home}.`, 'ok') });
+  if (a === 'rereg') { const ac = acById(id); regBox(`Re-register ${ac.reg}`, `Choose a new registration for your ${esc(typeOf(ac).name)}. It's free, and every pilot will see the new one.`, 'Save registration', ac.id,
+    async reg => { await rpc('set_registration', { p_ac: id, p_reg: reg }); toast(`${ac.reg} is now ${reg}.`, 'ok') }) }
   if (a === 'upg') await act(() => rpc('buy_upgrade', { p_key: b.dataset.k }), `${UPG[b.dataset.k].name} upgraded.`);
   if (a === 'sell') { const ac = acById(id), t = typeOf(ac); confirmBox(`Sell ${ac.reg}?`, `The ${esc(t.name)} returns to the lessor and you recover ${money(Math.round(t.price * 0.6))} of the deposit.`, 'Sell aircraft', async () => { await rpc('sell_aircraft', { p_ac: id }); if (UI.acId === id) UI.acId = null }) }
   if (a === 'pirep') openPirep(+id, false).catch(err => toast(err.message, 'bad'));
@@ -620,18 +743,19 @@ document.addEventListener('click', async e => {
   if (a === 'copycode') { try { await navigator.clipboard.writeText($('#setupCode').textContent); toast('Setup code copied.', 'ok') } catch (_) { const r = document.createRange(); r.selectNodeContents($('#setupCode')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Press Ctrl+C to copy the selected code.', '') } }
   if (a === 'rotatekey') confirmBox('Make a new setup code?', 'The tracker will stop working until you paste the new code into it.', 'Make new code', () => rpc('rotate_tracker_key'));
   if (a === 'adjust') {
-    confirmBox(`Adjust ${b.dataset.cs}`, `<div class="row2" style="margin-top:8px"><div class="field"><label for="adCash">Cash change ($)</label><input id="adCash" type="number" value="0"></div><div class="field"><label for="adRep">Reputation change</label><input id="adRep" type="number" step="0.5" value="0"></div></div><div class="field" style="margin-top:10px"><label for="adWhy">Reason</label><input id="adWhy" maxlength="120"></div>`, 'Apply',
-      () => rpc('admin_adjust', { p_pilot: id, p_cash: +$('#adCash').value || 0, p_rep: +$('#adRep').value || 0, p_reason: $('#adWhy').value }));
+    confirmBox(`Adjust ${b.dataset.cs}`, `<div class="row2" style="margin-top:8px"><div class="field"><label for="adCash">Cash change (${pref('currency')})</label><input id="adCash" type="number" value="0"></div><div class="field"><label for="adRep">Reputation change</label><input id="adRep" type="number" step="0.5" value="0"></div></div><div class="field" style="margin-top:10px"><label for="adWhy">Reason</label><input id="adWhy" maxlength="120"></div>`, 'Apply',
+      () => rpc('admin_adjust', { p_pilot: id, p_cash: Math.round(toUsd(+$('#adCash').value || 0)), p_rep: +$('#adRep').value || 0, p_reason: $('#adWhy').value }));
   }
 });
 document.addEventListener('change', async e => {
   const a = e.target.dataset.act;
   if (a === 'showall') { UI.showAll = e.target.checked; renderTab() }
+  if (a === 'nearonly') { UI.nearOnly = e.target.checked; renderTab() }
   if (a === 'sort') { UI.sort = e.target.value; renderTab() }
   if (a === 'staff') { try { await rpc('admin_set_staff', { p_pilot: e.target.dataset.id, p_staff: e.target.checked }); toast('Staff access updated.', 'ok') } catch (err) { toast(err.message, 'bad'); e.target.checked = !e.target.checked } }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); if (e.key === 'Enter' && e.target.id === 'bidAmt') $('#sendBid').click() });
-window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (TABS.some(t => t[0] === h) && h !== UI.tab) { if (liveMap) { liveMap.remove(); liveMap = null } UI.tab = h; renderAll() } });
+window.addEventListener('hashchange', () => { if (!D.me) return; const h = location.hash.slice(1); if (TABS.some(t => t[0] === h) && h !== UI.tab) { if (liveMap) { liveMap.remove(); liveMap = null } UI.tab = h; renderAll() } });
 let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (UI.tab === 'trips' && !$('#modal').children.length) renderTab() }, 200) });
 
 boot().catch(e => { $('#main').innerHTML = `<div class="authwrap"><div class="authcard"><h1>Couldn't start</h1><p>${esc(e.message)}</p></div></div>` });
