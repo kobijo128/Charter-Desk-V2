@@ -75,7 +75,8 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = $"Charter Desk FS Tracker {Version}";
-        Width = 1120; Height = 780; MinimumSize = new Size(940, 640);
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 900);
+        Width = Math.Min(1180, wa.Width - 40); Height = Math.Min(940, wa.Height - 40); MinimumSize = new Size(940, 640);
         BackColor = Theme.Bg; ForeColor = Theme.Text;
         Font = Theme.Sans(9.5f);
         StartPosition = FormStartPosition.CenterScreen;
@@ -140,12 +141,11 @@ public sealed class MainForm : Form
             using var fs = Theme.Semi(14f);
             TextRenderer.DrawText(g, "Charter Desk", title, new Point(56, 12), Theme.Text);
             var w = TextRenderer.MeasureText(g, "Charter Desk", title, Size.Empty, TextFormatFlags.NoPadding).Width;
-            TextRenderer.DrawText(g, "FS", fs, new Point(56 + w + 4, 12), Theme.Gold, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, "FS", fs, new Point(56 + w + 12, 17), Theme.Gold, TextFormatFlags.NoPadding);
             using var sub = Theme.Semi(7.75f);
             TextRenderer.DrawText(g, "FLIGHT TRACKER", sub, new Point(58, 38), Theme.Muted);
-            using var line = new Pen(Theme.Line);
-            g.DrawLine(line, 0, header.Height - 1, header.Width, header.Height - 1);
         };
+        header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Line });
         var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Theme.Header, Padding = new Padding(0, 14, 16, 0) };
         _setup.Margin = new Padding(0, 0, 0, 0);
         _setup.BackColor = Theme.Header;
@@ -190,7 +190,7 @@ public sealed class MainForm : Form
     {
         var col = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Theme.Bg, Margin = new Padding(0), AutoScroll = true };
         for (int i = 0; i < 4; i++) col.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        col.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        col.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
 
         // current flight
         var flight = new Card { Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 12) };
@@ -222,7 +222,7 @@ public sealed class MainForm : Form
         // landing report
         var st = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, BackColor = Theme.Card };
         st.Controls.Add(_scoreTitle);
-        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Theme.Card, Margin = new Padding(0) };
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, BackColor = Theme.Card, Margin = new Padding(0), MaximumSize = new Size(700, 0) };
         var rings = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, BackColor = Theme.Card, Margin = new Padding(0, 0, 12, 0) };
         var ringRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Theme.Card, Margin = new Padding(0) };
         ringRow.Controls.AddRange(new Control[] { _ringLanding, _ringComfort });
@@ -230,11 +230,11 @@ public sealed class MainForm : Form
         rings.Controls.Add(_points);
         row.Controls.Add(rings);
         var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 4, BackColor = Theme.Card, Margin = new Padding(0, 4, 0, 0) };
-        string[] names = { "Landing rate", "G at touchdown", "Bounces", "Runway", "Touchdown", "Centreline", "Speed at touchdown", "Pitch at touchdown", "Wind", "Block time", "Air time", "Fuel used" };
+        string[] names = { "Landing rate", "G-force", "Bounces", "Runway", "Past threshold", "Centreline", "Touchdown speed", "Touchdown pitch", "Wind", "Block time", "Air time", "Fuel used" };
         for (int i = 0; i < names.Length; i++)
         {
-            var k = new Label { Text = names[i], AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Sans(8.5f), BackColor = Theme.Card, Margin = new Padding(0, 3, 10, 3) };
-            var v = new Label { Text = "—", AutoSize = true, ForeColor = Theme.Text, Font = Theme.Mono(9.5f), BackColor = Theme.Card, Margin = new Padding(0, 3, 22, 3) };
+            var k = new Label { Text = names[i], AutoSize = true, ForeColor = Theme.Muted, Font = Theme.Sans(8.5f), BackColor = Theme.Card, Margin = new Padding(0, 4, 8, 4) };
+            var v = new Label { Text = "—", AutoSize = true, ForeColor = Theme.Text, Font = Theme.Mono(9.25f), BackColor = Theme.Card, Margin = new Padding(0, 4, 18, 4) };
             _stats[names[i]] = v;
             grid.Controls.Add(k, (i % 2) * 2, i / 2);
             grid.Controls.Add(v, (i % 2) * 2 + 1, i / 2);
@@ -246,7 +246,7 @@ public sealed class MainForm : Form
         col.Controls.Add(_score, 0, 3);
 
         // log
-        var logCard = new Card { Dock = DockStyle.Fill, Margin = new Padding(0), MinimumSize = new Size(0, 120) };
+        var logCard = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 4) };
         var lt = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = Theme.Card };
         lt.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         lt.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -500,15 +500,15 @@ public sealed class MainForm : Form
         _ringLanding.Set(r.LandingScoreEstimate);
         _ringComfort.Set(r.ComfortScore);
         if (r.LandingFpm is double fpm) SetStat("Landing rate", $"{fpm:0} fpm", FpmColor(fpm));
-        if (r.LandingG is double g) SetStat("G at touchdown", $"{g:0.00} g", g > 1.4 ? Theme.Warn : null);
+        if (r.LandingG is double g) SetStat("G-force", $"{g:0.00} g", g > 1.4 ? Theme.Warn : null);
         SetStat("Bounces", r.Bounces.ToString(), r.Bounces > 0 ? Theme.Warn : null);
         if (r.TouchdownSample is Sample td)
         {
-            SetStat("Speed at touchdown", $"{td.IasKt:0} kt IAS");
-            SetStat("Pitch at touchdown", $"{td.PitchDeg:0.0}°", td.PitchDeg < -0.5 ? Theme.Bad : null);
+            SetStat("Touchdown speed", $"{td.IasKt:0} kt IAS");
+            SetStat("Touchdown pitch", $"{td.PitchDeg:0.0}°", td.PitchDeg < -0.5 ? Theme.Bad : null);
             SetStat("Wind", $"{td.WindDir:000}° / {td.WindKt:0} kt");
         }
-        SetStat("Runway", "after filing"); SetStat("Touchdown", "after filing"); SetStat("Centreline", "after filing");
+        SetStat("Runway", "after filing"); SetStat("Past threshold", "after filing"); SetStat("Centreline", "after filing");
         _result.Text = "Runway and centreline accuracy are worked out when the report is filed at block on.";
     }
 
@@ -525,14 +525,14 @@ public sealed class MainForm : Form
         {
             SetStat("Runway", $"{td["runway"]?.GetValue<string>()} ({td["length_ft"]?.GetValue<double>() ?? 0:N0} ft)");
             var tdFt = td["td_ft"]?.GetValue<double>() ?? 0;
-            SetStat("Touchdown", tdFt < 0 ? $"{-tdFt:0} ft short" : $"{tdFt:N0} ft past threshold", tdFt < 0 || tdFt > 2500 ? Theme.Warn : null);
+            SetStat("Past threshold", tdFt < 0 ? $"{-tdFt:0} ft short" : $"{tdFt:N0} ft", tdFt < 0 || tdFt > 2500 ? Theme.Warn : null);
             var cl = td["cl_m"]?.GetValue<double>() ?? 0;
             var clMax = td["cl_max_m"]?.GetValue<double>();
-            SetStat("Centreline", $"{Math.Abs(cl):0.0} m {(cl > 0.05 ? "R" : cl < -0.05 ? "L" : "")}{(clMax.HasValue ? $" · max {clMax:0.0} m" : "")}", Math.Abs(cl) > 5 ? Theme.Warn : Theme.Good);
+            SetStat("Centreline", $"{Math.Abs(cl):0.0} m {(cl > 0.05 ? "R" : cl < -0.05 ? "L" : "")} (max {clMax ?? Math.Abs(cl):0.0})", Math.Abs(cl) > 5 ? Theme.Warn : Theme.Good);
         }
         else
         {
-            SetStat("Runway", "no runway data"); SetStat("Touchdown", "—"); SetStat("Centreline", "—");
+            SetStat("Runway", "no runway data"); SetStat("Past threshold", "—"); SetStat("Centreline", "—");
         }
         if (_rec != null)
         {
@@ -686,14 +686,14 @@ public sealed class MainForm : Form
         _times.Text = "BLOCK 1:02   ·   AIR 0:51   ·   FLOWN 214 NM";
         _tGs.Set("14"); _tIas.Set("12"); _tAlt.Set("273"); _tVs.Set("0"); _tG.Set("1.00"); _tAtt.Set("+1/+0"); _tFuel.Set("2,410"); _tComfort.Set("96", Theme.Good);
         var res = JsonNode.Parse("{\"status\":\"accepted\",\"net\":14820,\"rep_delta\":3.5,\"points\":189,\"landing_score\":93,\"comfort_score\":96,\"note\":\"Butter landing, client tipped 5%. Smooth flight (comfort 96): extra 2% tip.\",\"stats\":{\"touchdown\":{\"runway\":\"27\",\"length_ft\":8858,\"td_ft\":1180,\"cl_m\":-1.4,\"cl_max_m\":2.6}}}");
-        SetStat("Landing rate", "142 fpm", Theme.Good); SetStat("G at touchdown", "1.12 g"); SetStat("Bounces", "0");
-        SetStat("Speed at touchdown", "108 kt IAS"); SetStat("Pitch at touchdown", "3.8°"); SetStat("Wind", "250° / 9 kt");
+        SetStat("Landing rate", "142 fpm", Theme.Good); SetStat("G-force", "1.12 g"); SetStat("Bounces", "0");
+        SetStat("Touchdown speed", "108 kt IAS"); SetStat("Touchdown pitch", "3.8°"); SetStat("Wind", "250° / 9 kt");
         ShowServerScore(res); ShowResult(res);
         _cabinTitle.Text = "CABIN CALL · SEAT 2B · MR WHITFORD";
         _cabinMsg.Text = "\"Could we have the champagne now, please?\"\nAnswer within 5 minutes.";
         _cabinBtns.Controls.Add(new FlatBtn("Of course, right away", true) { BackColor = Theme.Card2 });
         _cabinBtns.Controls.Add(new FlatBtn("After the seatbelt sign") { BackColor = Theme.Card2 });
-        _cabin.Visible = true;
+        _cabin.Visible = Environment.GetCommandLineArgs().Contains("--cabin");
         Log("Block off at 13:02Z"); Log("Airborne at 13:11Z"); Log("Touchdown 142 fpm"); Log("Block on at 14:04Z");
         Application.DoEvents();
         PerformLayout(); Refresh(); Application.DoEvents();
