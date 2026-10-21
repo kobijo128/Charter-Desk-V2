@@ -61,7 +61,7 @@ const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
 const D = { settings: {}, airports: {}, apList: [], types: {}, clients: [], me: null, fleet: [], requests: [], bids: [], calls: [], trips: [], myPireps: [] };
 const UI = { tab: 'market', band: 'any', showAll: false, nearOnly: true, sort: 'closing', acId: null, sound: false };
 const NEAR_NM = 800;
-const TABS = [['market', 'Market'], ['trips', 'Trips'], ['hangar', 'Hangar'], ['shop', 'Shop'], ['live', 'Live map'], ['reports', 'Reports'], ['pilots', 'Pilots'], ['ledger', 'Ledger'], ['profile', 'Profile'], ['staff', 'Staff']];
+const TABS = [['market', 'Market'], ['trips', 'Trips'], ['hangar', 'Hangar'], ['crew', 'Crew'], ['shop', 'Shop'], ['live', 'Live map'], ['reports', 'Reports'], ['pilots', 'Pilots'], ['ledger', 'Ledger'], ['profile', 'Profile'], ['staff', 'Staff']];
 try { UI.sound = localStorage.getItem('cd-ringer') === '1'; } catch (e) { }
 let pollTimer = null, liveMap = null, liveLayer = null;
 
@@ -102,7 +102,9 @@ const acById = id => D.fleet.find(a => a.id === id);
 const typeOf = ac => D.types[ac.type_code];
 const queue = ac => D.trips.filter(t => t.aircraft_id === ac.id && (t.status === 'booked' || t.status === 'flying')).sort((a, b) => a.seq - b.seq);
 const futureLoc = ac => { const qd = queue(ac); return qd.length ? qd[qd.length - 1].to_icao : ac.loc };
-const active = () => acById(UI.acId) || D.fleet[0];
+const pilotFleet = () => D.fleet.filter(a => a.ops !== 'crew');
+const active = () => { const a = acById(UI.acId); return a && a.ops !== 'crew' ? a : (pilotFleet()[0] || null) };
+const anyAc = () => acById(UI.acId) || D.fleet[0];
 function quote(ac, r, from) {
   const t = typeOf(ac), loc = from || futureLoc(ac);
   const repoNm = loc === r.from_icao ? 0 : nm(loc, r.from_icao);
@@ -216,16 +218,18 @@ async function loadStatic() {
 }
 async function refreshCore() {
   const u = D.uid;
-  const [me, fleet, requests, bids, calls, trips, pireps] = await Promise.all([
+  const [me, fleet, requests, bids, calls, trips, pireps, crew, legs] = await Promise.all([
     q(sb.from('pilots').select('*').eq('id', u).single()),
     q(sb.from('fleet').select('*').eq('pilot_id', u).order('created_at')),
     q(sb.from('requests').select('*').in('status', ['open', 'deciding']).order('expires_at').limit(200)),
     q(sb.from('bids').select('*').eq('pilot_id', u).order('id', { ascending: false }).limit(25)),
     q(sb.from('calls').select('*').eq('pilot_id', u).eq('status', 'ringing')),
     q(sb.from('trips').select('*').eq('pilot_id', u).in('status', ['booked', 'flying', 'filed']).order('seq')),
-    q(sb.from('pireps').select('id,trip_id,status,net,rep_delta,landing_fpm,block_h,created_at,review_note').eq('pilot_id', u).order('id', { ascending: false }).limit(8))]);
+    q(sb.from('pireps').select('id,trip_id,status,net,rep_delta,landing_fpm,block_h,created_at,review_note').eq('pilot_id', u).order('id', { ascending: false }).limit(8)),
+    q(sb.from('crew').select('*').eq('pilot_id', u).in('status', ['training', 'active']).order('id')),
+    q(sb.from('crew_legs').select('*').eq('pilot_id', u).order('id', { ascending: false }).limit(15))]);
   const prevCall = D.calls[0]?.id;
-  Object.assign(D, { me, fleet, requests, bids, calls, trips, myPireps: pireps });
+  Object.assign(D, { me, fleet, requests, bids, calls, trips, myPireps: pireps, crew, legs });
   if (D.calls[0] && D.calls[0].id !== prevCall) ring();
 }
 let polling = false;
@@ -236,7 +240,7 @@ async function doPoll() {
     for (const e of (res.events || [])) toast(e.won ? `Won: ${e.client}, ${e.route} at ${money(e.amount)}. It's in your trips.` : `Lost ${e.route}. ${e.note}`, e.won ? 'ok' : 'bad');
     await refreshCore();
     renderHeader(); renderCall();
-    if (['market', 'trips'].includes(UI.tab) && !$('#modal').children.length) renderTabSafe();
+    if (['market', 'trips', 'crew'].includes(UI.tab) && !$('#modal').children.length) renderTabSafe();
   } catch (e) { console.warn(e) }
   polling = false;
 }
@@ -364,7 +368,7 @@ function renderHeader() {
 }
 function clock() {
   const now = Date.now(); $('#gUtc').textContent = hhmm(now, 'UTC') + 'Z';
-  const ac = D.me && active(); if (!ac) return;
+  const ac = D.me && (active() || anyAc()); if (!ac) return;
   const tz = tzOf(ac.loc); $('#gLocalLabel').textContent = `Local · ${ac.loc}`; $('#gLocal').textContent = hhmm(now, tz);
 }
 function updateCountdowns() {
@@ -377,7 +381,7 @@ function renderCall() {
   if ($('#call').dataset.id === String(c.id)) return;
   $('#call').dataset.id = c.id;
   const A = D.airports[c.from_icao], B = D.airports[c.to_icao];
-  const el = D.fleet.filter(a => fits(typeOf(a), c));
+  const el = pilotFleet().filter(a => fits(typeOf(a), c));
   const initials = c.caller.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
   $('#call').innerHTML = `<div class="callcard" role="alertdialog" aria-label="Incoming call from ${esc(c.caller)}">
   <span class="lbl">CHARTER DESK FS · INCOMING CALL</span>
@@ -398,7 +402,7 @@ function renderCall() {
 function renderAll() { renderHeader(); renderCall(); renderTab() }
 function renderTabSafe() { const ae = document.activeElement; if (ae && $('#main').contains(ae) && ae.matches('input,select,textarea')) return; renderTab() }
 function renderTab() {
-  const f = { market: renderMarket, trips: renderTrips, hangar: renderHangar, shop: renderShop, live: renderLive, reports: renderReports, pilots: renderPilots, ledger: renderLedger, profile: renderProfile, staff: renderStaff }[UI.tab] || renderMarket;
+  const f = { market: renderMarket, trips: renderTrips, hangar: renderHangar, crew: renderCrew, shop: renderShop, live: renderLive, reports: renderReports, pilots: renderPilots, ledger: renderLedger, profile: renderProfile, staff: renderStaff }[UI.tab] || renderMarket;
   Promise.resolve(f()).catch(e => { $('#main').innerHTML = `<div class="panel empty">Couldn't load this page: ${esc(e.message)}</div>` });
 }
 
@@ -406,7 +410,7 @@ const BANDS = [['any', 'Any'], ['0-1', 'Under 1h'], ['1-2', '1–2h'], ['2-3', '
 const inBand = h => { if (UI.band === 'any') return true; const [a, b] = UI.band.split('-').map(Number); return h >= a && h < b };
 
 function renderMarket() {
-  const ac = active(); if (!ac) { $('#main').innerHTML = '<div class="panel empty">You have no aircraft. Add one in the Shop.</div>'; return }
+  const ac = active(); if (!ac) { $('#main').innerHTML = `<div class="panel empty">${D.fleet.length ? 'All your aircraft are flown by crew. Take one back on the <a href="#crew" data-tab="crew">Crew</a> page to quote yourself.' : 'You have no aircraft. Add one in the Shop.'}</div>`; return }
   const t = typeOf(ac);
   let list = D.requests.map(r => ({ r, ok: fits(t, r), q: quote(ac, r) })).filter(x => inBand(blockH(t, x.r.dist)));
   const hidden = list.filter(x => !x.ok).length;
@@ -420,7 +424,7 @@ function renderMarket() {
   const pending = D.bids.filter(b => b.status === 'pending'), recent = D.bids.filter(b => b.status !== 'pending').slice(0, 7);
   $('#main').innerHTML = `<div class="market">
  <aside class="side">
-  <div class="panel"><h3>Bidding with</h3><div class="acpick">${D.fleet.map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${dist(tt.range_nm)}</em></button>` }).join('')}</div></div>
+  <div class="panel"><h3>Bidding with</h3><div class="acpick">${pilotFleet().map(a => { const tt = typeOf(a), n = queue(a).length; return `<button type="button" class="acopt" data-act="pickac" data-id="${a.id}" aria-pressed="${a.id === ac.id}"><b>${a.reg}</b><span>${esc(tt.name)}</span><em>At ${futureLoc(a)}${n ? ` after ${n} leg${n > 1 ? 's' : ''}` : ''} · ${tt.seats} seats · ${dist(tt.range_nm)}</em></button>` }).join('')}</div></div>
   <div class="panel"><h3>Flight time</h3><div class="bands">${BANDS.map(([k, l]) => `<button type="button" class="chip" data-act="band" data-k="${k}" aria-pressed="${UI.band === k}">${l}</button>`).join('')}</div>
    <p class="muted" style="font-size:12px;margin:10px 0 0">Block time in the ${esc(t.name)}, including taxi and climb.</p></div>
   <div class="panel"><h3>${esc(t.name)}</h3><div class="specs">
@@ -527,11 +531,11 @@ function renderHangar() {
    <div class="field" style="width:120px"><label for="pxInput">Flight prefix</label><input id="pxInput" maxlength="3" value="${esc(D.me.prefix)}"></div><button class="btn pri" type="submit">Save</button></form>
   <div class="cards">${D.fleet.map(a => {
     const t = typeOf(a), n = queue(a).length, val = acValue(t, a.year), loan = +a.loan_balance || 0, net = Math.round(val * 0.92 - loan);
-    return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.year} · ${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}</p>
+    return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.year} · ${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}${a.ops === 'crew' ? ' · <span class="tag call">Crew-operated</span>' : ''}</p>
   <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div>
    <div><label>Market value</label><span>${bigMoney(val)}</span></div><div><label>Charter rate</label><span>${kmoney(acRate(a))}/h</span></div>
    <div><label>Loan</label><span>${loan > 0 ? bigMoney(loan) : 'Owned outright'}</span></div><div><label>${loan > 0 ? 'Monthly payment' : 'Legs queued'}</label><span>${loan > 0 ? `${kmoney(a.loan_payment)} · ${fmtDate(a.loan_next_due).split(' ')[0]}` : n}</span></div></div>
-  <div class="foot">${a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
+  <div class="foot">${a.ops === 'crew' ? '<a class="btn" href="#crew" data-tab="crew">Crew operations</a>' : a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
   <button type="button" class="btn" data-act="rereg" data-id="${a.id}">Change registration</button>
   ${loan > 0 ? `<button type="button" class="btn" data-act="repay" data-id="${a.id}" ${D.me.cash < loan ? 'disabled title="Not enough cash to pay it off"' : ''}>Pay off loan</button>` : ''}
   ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" data-net="${net}" ${n ? 'disabled title="Finish or cancel its trips first"' : ''}>Sell · ${net < 0 ? '−' : ''}${bigMoney(Math.abs(net))}</button>` : ''}</div></div>` }).join('')}
@@ -540,7 +544,9 @@ function renderHangar() {
 }
 
 const SHOP_CATS = [['piston', 'Pistons'], ['turboprop', 'Turboprops'], ['light', 'Very light & light jets'], ['mid', 'Midsize & super-midsize'], ['large', 'Large & ultra-long-range']];
-function renderShop() {
+async function renderShop() {
+  let cands = [];
+  try { await rpc('refresh_candidates'); cands = await q(sb.from('crew_candidates').select('*').eq('pilot_id', D.uid).order('salary_ask')) } catch (e) { }
   const free = D.me.slots - D.fleet.length, slotCost = 60000 * 2 ** (D.me.slots - 2), cash = D.me.cash;
   UI.shopCat ||= 'light';
   const list = D.typeList.filter(t => t.category === UI.shopCat).sort((a, b) => a.price_new - b.price_new);
@@ -551,9 +557,70 @@ function renderShop() {
    return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)} · built ${t.year_from}${t.year_to >= thisYear() ? ' to today' : `–${t.year_to}`}${own ? ` · ${own} in fleet` : ''}</p>
   <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate (new)</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Crew</label><span>${t.crew_req === 1 ? 'Single pilot' : 'Two pilots'}</span></div></div>
   <div class="foot"><span style="display:flex;flex-direction:column"><span class="price">${isNew ? bigMoney(t.price_new) + ' new' : 'Used only'}</span><span class="hint">Used from ${bigMoney(cheapest)} (${oldest})</span></span><button type="button" class="btn ${free ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free ? 'disabled' : ''}>Choose</button></div></div>` }).join('')}</div></div>
+ ${crewShopSection(cands)}
  <div class="section"><div class="sechead"><div><h2>Company upgrades</h2><p>Permanent improvements to how your desk wins and runs work.</p></div></div>
  <div class="cards">${Object.entries(UPG).map(([k, u]) => { const l = upg(k), c = u.cost[l]; return `<div class="card"><div class="hd"><b>${u.name}</b><div class="pips">${u.cost.map((_, i) => `<i class="${i < l ? 'on' : ''}"></i>`).join('')}</div></div><p>${u.desc}</p>
   <div class="foot">${l >= u.cost.length ? '<span class="tag won">Maxed</span>' : `<span class="price">${kmoney(c)}</span><button type="button" class="btn ${cash >= c ? 'pri' : ''}" data-act="upg" data-k="${k}" ${cash < c ? 'disabled' : ''}>Level ${l + 1}</button>`}</div></div>` }).join('')}</div></div>`;
+}
+
+
+/* ---------- crew ---------- */
+const CREW_RATES = { piston: [5500, 6000, 2000], turboprop: [8000, 20000, 4000], light: [11000, 35000, 6000], mid: [14000, 50000, 8000], large: [19000, 75000, 12000] };
+const CAT_RANK = { piston: 0, turboprop: 1, light: 2, mid: 3, large: 4 };
+const roleName = r => r === 'fo' ? 'First officer' : 'Captain';
+const crewTraining = (role, cat) => Math.round(CREW_RATES[cat][1] * (role === 'fo' ? 0.8 : 1));
+const daysTo = v => Math.ceil((ts(v) - Date.now()) / 864e5);
+const dueText = v => { const d = daysTo(v); return d < 0 ? `<span class="neg">overdue ${-d}d</span>` : d <= 14 ? `<span class="warn">in ${d}d</span>` : `in ${d}d` };
+function crewState(c) {
+  const now = Date.now();
+  if (c.status === 'training') return `In type training until ${fmtDate(c.trained_at)}`;
+  if (c.notice_until) return `<span class="neg">On notice until ${fmtDate(c.notice_until)}</span>`;
+  if (c.busy_until && ts(c.busy_until) > now) return `In a check until ${fmtDate(c.busy_until)}`;
+  if (ts(c.opc_due) < now || ts(c.recurrent_due) < now) return '<span class="neg">Grounded: check overdue</span>';
+  const leg = D.legs.find(l => l.status === 'flying' && l.aircraft_id === c.aircraft_id && c.aircraft_id);
+  if (leg) return `Flying ${leg.from_icao} → ${leg.to_icao}`;
+  return c.aircraft_id ? 'Ready' : 'Ready · not assigned';
+}
+function opsLine(a) {
+  const t = typeOf(a), mine = D.crew.filter(c => c.aircraft_id === a.id), leg = D.legs.find(l => l.status === 'flying' && l.aircraft_id === a.id);
+  const ready = mine.filter(c => c.status === 'active' && !c.notice_until && ts(c.opc_due) > Date.now() && ts(c.recurrent_due) > Date.now() && (!c.busy_until || ts(c.busy_until) <= Date.now()));
+  if (a.ops !== 'crew') return 'You fly this aircraft';
+  if (leg) return `Crew flight ${leg.from_icao} → ${leg.to_icao} for ${esc(leg.client)}, lands ${fmtDep(leg.arr_at, leg.to_icao)} · earns about ${kmoney(leg.revenue - leg.cost)}`;
+  if (ready.length < t.crew_req || !ready.some(c => c.role === 'captain')) return `<span class="warn">Waiting for crew: needs ${t.crew_req} ready pilot${t.crew_req > 1 ? 's' : ''} including a captain</span>`;
+  return a.crew_busy_until && ts(a.crew_busy_until) > Date.now() ? `On the ground at ${a.loc}; brokers expect the next job around ${fmtDep(a.crew_busy_until, a.loc)}` : `Looking for the next job at ${a.loc}`;
+}
+function renderCrew() {
+  const legsDone = D.legs.filter(l => l.status === 'done');
+  const monthly = D.crew.reduce((x, c) => x + +c.salary, 0);
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Crew operations</h2><p>Hand an aircraft to your crew and they fly charters on their own, in real time, while you're away. Brokers keep 15%. You can't quote with a crew-operated aircraft; take it back here when you want to fly it yourself.</p></div><a class="btn pri" href="#shop" data-tab="shop" data-shop="crew">Hire crew</a></div>
+  <div class="cards">${D.fleet.map(a => { const t = typeOf(a), mine = D.crew.filter(c => c.aircraft_id === a.id); return `<div class="card ${a.ops === 'crew' ? 'active' : ''}">
+    <div class="hd"><b class="mono">${a.reg}</b><span>${a.year} · ${a.type_code}</span></div>
+    <p>${esc(t.name)} · at ${a.loc} · ${t.crew_req === 1 ? 'single pilot' : 'two pilots'}</p>
+    <p class="opsline">${opsLine(a)}</p>
+    <div class="crewlist">${mine.length ? mine.map(c => `<span>${esc(c.name)} · ${c.role === 'fo' ? 'FO' : 'CPT'}</span>`).join('') : '<span class="muted">No crew assigned</span>'}</div>
+    <div class="foot">${a.ops === 'crew' ? `<button type="button" class="btn" data-act="ops" data-id="${a.id}" data-mode="pilot">Take back to fly myself</button>` : `<button type="button" class="btn pri" data-act="ops" data-id="${a.id}" data-mode="crew">Let crew fly it</button>`}</div></div>` }).join('')}</div></div>
+  <div class="section"><div class="sechead"><div><h2>Your crew</h2><p>${D.crew.length ? `${D.crew.length} pilot${D.crew.length > 1 ? 's' : ''} · ${money(monthly)} a month in salaries. OPCs are due every 6 months and recurrent training every 12; overdue pilots are grounded. Morale falls as the company earns more, so expect requests for pay rises.` : 'Nobody yet. Hire captains and first officers in the Shop.'}</p></div></div>
+  ${D.crew.length ? `<div class="panel tablewrap"><table class="grid crewtab"><thead><tr><th>Pilot</th><th>Rating</th><th>Aircraft</th><th>Morale</th><th>Salary / month</th><th>OPC</th><th>Recurrent</th><th>Status</th><th></th></tr></thead><tbody>
+  ${D.crew.map(c => { const rated = D.fleet.filter(a => a.type_code === c.type_code), cat = D.types[c.type_code].category, sat = +c.satisfaction;
+    return `<tr><td><b>${esc(c.name)}</b><br><span class="hint">${roleName(c.role)} · ${c.experience} yr${c.experience === 1 ? "" : "s"} · ${hm(c.hours)} with you</span></td>
+    <td class="n">${c.type_code}</td>
+    <td><select class="sel" data-act="assign" data-id="${c.id}" aria-label="Aircraft for ${esc(c.name)}"><option value="">Not assigned</option>${rated.map(a => `<option value="${a.id}" ${a.id === c.aircraft_id ? 'selected' : ''}>${a.reg}</option>`).join('')}</select></td>
+    <td><div class="morale"><i style="width:${sat}%;background:${sat >= 60 ? 'var(--ok)' : sat >= 35 ? 'var(--brass-light)' : 'var(--bad)'}"></i></div><span class="hint">${Math.round(sat)}%${c.raise_asked ? ' · <b class="neg">asking for a raise</b>' : ''}</span></td>
+    <td class="n">${money(c.salary)} <button type="button" class="linkbtn" data-act="pay" data-id="${c.id}">Change</button></td>
+    <td class="n">${dueText(c.opc_due)}<br><button type="button" class="linkbtn" data-act="check" data-kind="opc" data-id="${c.id}">Book · ${kmoney(CREW_RATES[cat][2])}</button></td>
+    <td class="n">${dueText(c.recurrent_due)}<br><button type="button" class="linkbtn" data-act="check" data-kind="recurrent" data-id="${c.id}">Book · ${kmoney(CREW_RATES[cat][1] * 0.5)}</button></td>
+    <td>${crewState(c)}</td>
+    <td><button type="button" class="btn danger" data-act="release" data-id="${c.id}">Let go</button></td></tr>` }).join('')}</tbody></table></div>` : ''}</div>
+  ${D.legs.length ? `<div class="section"><h2>Recent crew flights</h2><div class="panel tablewrap"><table class="grid"><thead><tr><th>Aircraft</th><th>Route</th><th>Client</th><th>Departed</th><th>Block</th><th>Net</th><th>Status</th></tr></thead><tbody>
+  ${D.legs.map(l => `<tr><td class="n">${l.reg}</td><td class="n">${l.from_icao} → ${l.to_icao}</td><td>${esc(l.client)}</td><td class="n">${fmtDep(l.dep_at, l.from_icao)}</td><td class="n">${hm(l.block_h)}</td><td class="n ${l.revenue - l.cost >= 0 ? 'pos' : 'neg'}">${money(l.revenue - l.cost)}</td><td>${l.status === 'flying' ? `<span class="tag flying">Lands ${fmtDep(l.arr_at, l.to_icao)}</span>` : '<span class="tag accepted">Done</span>'}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+function crewShopSection(cands) {
+  const myCats = [...new Set(D.fleet.map(a => typeOf(a).category))];
+  return `<div class="section" id="hire"><div class="sechead"><div><h2>Hire crew</h2><p>Pilots looking for work right now; the list changes through the day. You pay a type rating course when you hire (it takes 12 hours), then a monthly salary. They'll only fly aircraft no bigger than they're used to.</p></div></div>
+  ${cands.length ? `<div class="cards">${cands.map(c => { const r = CREW_RATES[c.category], types = [...new Set(D.fleet.map(a => a.type_code))].filter(tc => CAT_RANK[D.types[tc].category] <= CAT_RANK[c.category]);
+    return `<div class="card"><div class="hd"><b>${esc(c.name)}</b><span>${roleName(c.role)}</span></div><p>${c.experience} years' experience · used to ${c.category === 'light' ? 'light jets' : c.category === 'mid' ? 'midsize jets' : c.category === 'large' ? 'large jets' : c.category + 's'} · skill ${Math.round(c.skill * 100)}</p>
+    <div class="specs"><div><label>Asks</label><span>${money(c.salary_ask)} / month</span></div><div><label>Leaves the market</label><span>${fmtDate(c.expires_at)}</span></div></div>
+    <div class="foot">${types.length ? `<select class="sel" id="hireType${c.id}" aria-label="Type rating for ${esc(c.name)}">${types.map(tc => `<option value="${tc}">${tc} · course ${kmoney(crewTraining(c.role, D.types[tc].category))}</option>`).join('')}</select><button type="button" class="btn pri" data-act="hire" data-id="${c.id}">Hire</button>` : '<span class="hint">None of your aircraft suit this pilot.</span>'}</div></div>` }).join('')}</div>` : '<div class="panel empty">Loading candidates…</div>'}</div>`;
 }
 
 async function buyBox(code) {
@@ -789,7 +856,7 @@ async function act(fn, okMsg) {
 /* ---------- events ---------- */
 document.addEventListener('click', async e => {
   const tab = e.target.closest('[data-tab]');
-  if (tab) { e.preventDefault(); if (liveMap) { liveMap.remove(); liveMap = null } UI.tab = tab.dataset.tab; history.replaceState(null, '', '#' + UI.tab); renderAll(); window.scrollTo(0, 0); return }
+  if (tab) { e.preventDefault(); if (liveMap) { liveMap.remove(); liveMap = null } UI.tab = tab.dataset.tab; history.replaceState(null, '', '#' + UI.tab); renderAll(); window.scrollTo(0, 0); if (tab.dataset.shop) setTimeout(() => document.getElementById('hire')?.scrollIntoView({ behavior: 'smooth' }), 900); return }
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.dataset.act, id = b.dataset.id;
   if (a === 'scrim') { if (e.target === b) closeModal(); return }
@@ -804,7 +871,7 @@ document.addEventListener('click', async e => {
     try { await rpc('place_bid', { p_request: +id, p_aircraft: active().id, p_amount: v }); closeModal(); toast(`Quote of ${money(v)} sent.`, ''); await afterChange() }
     catch (err) { $('#bidErr').textContent = err.message }
   }
-  if (a === 'acceptcall') { const ac = $('#callAc')?.value || D.fleet.find(x => fits(typeOf(x), D.calls[0]))?.id; await act(() => rpc('accept_call', { p_call: +id, p_aircraft: ac }), 'Booked. Plan it under Trips.'); $('#call').dataset.id = '' }
+  if (a === 'acceptcall') { const ac = $('#callAc')?.value || pilotFleet().find(x => fits(typeOf(x), D.calls[0]))?.id; await act(() => rpc('accept_call', { p_call: +id, p_aircraft: ac }), 'Booked. Plan it under Trips.'); $('#call').dataset.id = '' }
   if (a === 'declinecall') { await act(() => rpc('decline_call', { p_call: +id })); $('#call').dataset.id = '' }
   if (a === 'copyplan') {
     const tr = D.trips.find(x => x.id === +id), p = plan(tr), ac = p.ac;
@@ -816,6 +883,11 @@ document.addEventListener('click', async e => {
   if (a === 'buyslot') await act(() => rpc('buy_slot'), 'New fleet slot ready.');
   if (a === 'buyac') buyBox(b.dataset.k).catch(err => toast(err.message, 'bad'));
   if (a === 'shopcat') { UI.shopCat = b.dataset.k; renderTab() }
+  if (a === 'ops') await act(() => rpc('set_ops', { p_ac: id, p_mode: b.dataset.mode }), b.dataset.mode === 'crew' ? 'Handed to your crew. They\'ll take the next job that comes up.' : 'Back under your control.');
+  if (a === 'hire') { const tc = $('#hireType' + id).value, c = D.types[tc]; await act(() => rpc('hire_crew', { p_cand: +id, p_type: tc }), `Hired. Type rating course on the ${c.name} finishes in 12 hours.`) }
+  if (a === 'check') { const c = D.crew.find(x => x.id === +id), cat = D.types[c.type_code].category, k = b.dataset.kind; confirmBox(k === 'opc' ? `Book an OPC for ${c.name}?` : `Book recurrent training for ${c.name}?`, `${money(k === 'opc' ? CREW_RATES[cat][2] : CREW_RATES[cat][1] * 0.5)}. ${c.name} is unavailable for ${k === 'opc' ? '4' : '8'} hours, and the next one is due ${k === 'opc' ? '6' : '12'} months after the current due date.`, 'Book it', () => rpc('crew_check', { p_crew: +id, p_kind: k })) }
+  if (a === 'pay') { const c = D.crew.find(x => x.id === +id); confirmBox(`Change ${c.name}'s pay`, `<div class="field" style="margin-top:8px"><label for="paySal">Monthly salary (${pref('currency')})</label><input id="paySal" type="number" min="1000" step="100" value="${Math.round(toLocal(c.salary) / 100) * 100}"></div><p class="hint" style="margin-top:8px">A raise lifts morale straight away. A cut hurts it.</p>`, 'Save', () => rpc('set_salary', { p_crew: +id, p_salary: Math.round(toUsd(+$('#paySal').value)) })) }
+  if (a === 'release') { const c = D.crew.find(x => x.id === +id); confirmBox(`Let ${c.name} go?`, `You pay one month's notice, ${money(c.salary)}. Any aircraft left without enough crew comes back under your control.`, 'Let go', () => rpc('release_crew', { p_crew: +id })) }
   if (a === 'repay') { const ac = acById(id); confirmBox(`Pay off the loan on ${ac.reg}?`, `${money(ac.loan_balance)} comes out of your balance now, and the monthly payments stop.`, 'Pay off loan', () => rpc('repay_loan', { p_ac: id })) }
   if (a === 'rereg') { const ac = acById(id); regBox(`Re-register ${ac.reg}`, `Choose a new registration for your ${esc(typeOf(ac).name)}. It's free, and every pilot will see the new one.`, 'Save registration', ac.id,
     async reg => { await rpc('set_registration', { p_ac: id, p_reg: reg }); toast(`${ac.reg} is now ${reg}.`, 'ok') }) }
@@ -834,6 +906,7 @@ document.addEventListener('click', async e => {
 document.addEventListener('change', async e => {
   const a = e.target.dataset.act;
   if (a === 'showall') { UI.showAll = e.target.checked; renderTab() }
+  if (a === 'assign') await act(() => rpc('assign_crew', { p_crew: +e.target.dataset.id, p_ac: e.target.value || null }), 'Crew assignment saved.');
   if (a === 'nearonly') { UI.nearOnly = e.target.checked; renderTab() }
   if (a === 'sort') { UI.sort = e.target.value; renderTab() }
   if (a === 'staff') { try { await rpc('admin_set_staff', { p_pilot: e.target.dataset.id, p_staff: e.target.checked }); toast('Staff access updated.', 'ok') } catch (err) { toast(err.message, 'bad'); e.target.checked = !e.target.checked } }

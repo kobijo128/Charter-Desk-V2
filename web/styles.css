@@ -286,3 +286,13 @@ label.check.pay input{margin-top:3px}
 .starters{grid-template-columns:repeat(auto-fill,minmax(165px,1fr))}
 .field input[type=radio],.field input[type=checkbox]{width:auto;padding:0}
 label.check.pay{display:flex;gap:10px}
+
+/* crew */
+.neg{color:var(--bad)}.pos{color:var(--ok)}.warn{color:var(--warn)}
+.opsline{color:var(--ink)!important;font-weight:600;font-size:13px!important;background:var(--surface2);border-radius:8px;padding:8px 10px;margin:0}
+.crewlist{display:flex;flex-wrap:wrap;gap:6px}
+.crewlist span{font-size:12px;background:var(--line2);border-radius:999px;padding:2px 9px}
+.morale{width:90px;height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:3px}
+.morale i{display:block;height:100%}
+table.crewtab td{vertical-align:top}
+table.crewtab .sel{max-width:130px}
