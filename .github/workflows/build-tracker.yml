@@ -40,9 +40,10 @@ jobs:
         shell: pwsh
         run: |
           git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
-          Copy-Item tracker-screenshot.png $env:RUNNER_TEMP/shot.png
+          Move-Item tracker-screenshot.png $env:RUNNER_TEMP/shot.png -Force
           git fetch origin ci-screens 2>$null
-          if ($LASTEXITCODE -eq 0) { git checkout -B ci-screens origin/ci-screens } else { git checkout --orphan ci-screens; git rm -rf . -q }
+          if ($LASTEXITCODE -eq 0) { git checkout -f -B ci-screens FETCH_HEAD } else { git checkout --orphan ci-screens; git rm -rf . -q }
+          $global:LASTEXITCODE = 0
           Copy-Item $env:RUNNER_TEMP/shot.png tracker-screenshot.png -Force
           git add tracker-screenshot.png
           git commit -m "Tracker screenshot from $env:GITHUB_SHA" --allow-empty -q
