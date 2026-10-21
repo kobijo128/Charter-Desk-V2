@@ -86,11 +86,21 @@ public sealed class Api
         return string.IsNullOrWhiteSpace(body) ? null : JsonNode.Parse(body);
     }
 
-    public async Task<(string pilot, List<Booking> trips)> Session()
+    public sealed class SessionInfo
+    {
+        public string Pilot = "", Weight = "lb";
+        public int Points;
+        public List<Booking> Trips = new();
+    }
+
+    public async Task<SessionInfo> Session()
     {
         var r = await Rpc("tracker_session", new JsonObject());
         var p = r!["pilot"]!;
-        var pilot = $"{p["callsign"]} · {p["name"]} · {p["company"]}";
+        var info = new SessionInfo { Pilot = $"{p["callsign"]} · {p["company"]}" };
+        try { info.Weight = p["prefs"]?["weight"]?.GetValue<string>() ?? "lb"; } catch { }
+        try { info.Points = p["points"]?.GetValue<int>() ?? 0; } catch { }
+        if (info.Points > 0) info.Pilot += $" · {info.Points:N0} pts";
         var list = new List<Booking>();
         foreach (var t in r["trips"]!.AsArray())
         {
@@ -107,7 +117,8 @@ public sealed class Api
             if (t["sim_match"] is JsonArray sm) foreach (var w in sm) b.SimMatch.Add(S(w));
             list.Add(b);
         }
-        return (pilot, list);
+        info.Trips = list;
+        return info;
     }
 
     public Task Start(long trip) => Rpc("tracker_start", new JsonObject { ["p_trip"] = trip });

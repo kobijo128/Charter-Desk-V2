@@ -7,6 +7,8 @@ public sealed class Sample
 {
     public DateTime Utc;
     public double Lat, Lon, AltFt, GsKt, IasKt, VsFpm, HdgTrue, G;
+    public double PitchDeg, BankDeg;   // nose up and right wing down are positive
+    public double WindDir, WindKt;
     public double TouchdownVsFpm;   // FSUIPC's held vertical speed from the last airborne moment
     public double SimRate = 1, FuelLb;
     public bool OnGround, Paused, Slew, Crashed, ParkingBrake, EnginesRunning;
@@ -21,6 +23,10 @@ public sealed class SimReader : IDisposable
     readonly Offset<long> _lon = new(0x0568);
     readonly Offset<long> _alt = new(0x0570);
     readonly Offset<uint> _hdg = new(0x0580);
+    readonly Offset<int> _pitch = new(0x0578);  // degrees * 2^32/360, negative = nose up
+    readonly Offset<int> _bank = new(0x057C);   // degrees * 2^32/360, negative = right wing down
+    readonly Offset<ushort> _windKt = new(0x0E90);
+    readonly Offset<ushort> _windDir = new(0x0E92); // degrees * 65536/360
     readonly Offset<int> _gs = new(0x02B4);    // m/s * 65536
     readonly Offset<int> _ias = new(0x02BC);   // kt * 128
     readonly Offset<int> _vs = new(0x02C8);    // m/s * 256
@@ -69,6 +75,10 @@ public sealed class SimReader : IDisposable
             Lon = _lon.Value * 360.0 / (two32 * two32),
             AltFt = _alt.Value / two32 * 3.28084,
             HdgTrue = (_hdg.Value * 360.0 / two32 + 360) % 360,
+            PitchDeg = -_pitch.Value * 360.0 / two32,
+            BankDeg = -_bank.Value * 360.0 / two32,
+            WindKt = _windKt.Value,
+            WindDir = _windDir.Value * 360.0 / 65536.0,
             GsKt = _gs.Value / 65536.0 * 1.943844,
             IasKt = _ias.Value / 128.0,
             VsFpm = _vs.Value / 256.0 * 196.850394,
