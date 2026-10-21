@@ -142,7 +142,7 @@ end $$;
 create or replace function public.simbrief_import(p_trip bigint, p_ofp_id text, p_since timestamptz)
 returns jsonb language plpgsql security definer set search_path = public, extensions as $$
 declare
-  u uuid := me(); t trips; p pilots; url text; r extensions.http_response; x xml; o jsonb;
+  u uuid := me(); t trips; p pilots; url text; r record; x xml; o jsonb;
 begin
   select * into t from trips where id = p_trip and pilot_id = u for update;
   if t.id is null or t.status not in ('booked','flying') then raise exception 'That trip can''t be changed now.'; end if;
@@ -155,7 +155,7 @@ begin
     url := 'https://www.simbrief.com/api/xml.fetcher.php?username=' || extensions.urlencode(p.simbrief_user);
   end if;
   perform extensions.http_set_curlopt('CURLOPT_TIMEOUT', '20');
-  r := extensions.http_get(url);
+  select * into r from extensions.http_get(url);
   if r.status = 400 and p_ofp_id is null then raise exception 'SimBrief doesn''t recognise the username %, or it has no plans yet.', p.simbrief_user; end if;
   if r.status <> 200 then raise exception 'SimBrief didn''t answer (error %). Try again in a moment.', r.status; end if;
   begin
