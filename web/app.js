@@ -763,10 +763,88 @@ const briefLine = b => [b.catering, b.drinks, ...(b.dietary || []), ...(b.reques
 function planChips(trip) {
   const chips = [];
   if (trip.customs_needed) chips.push(trip.customs_sent_at ? '<span class="tag accepted">Customs filed</span>' : '<span class="tag pending">Customs not filed</span>');
+  const hn = (trip.handling_dep ? 1 : 0) + (trip.handling_arr ? 1 : 0);
+  chips.push(hn === 2 ? '<span class="tag accepted">Handling booked</span>' : `<span class="tag ${hn ? 'pending' : 'ferry'}">Handling ${hn}/2</span>`);
+  if (needsCatering(trip)) chips.push(trip.catering_order ? '<span class="tag accepted">Catering ordered</span>' : '<span class="tag pending">No catering yet</span>');
   chips.push(trip.ofp ? '<span class="tag accepted">OFP issued</span>' : '<span class="tag ferry">No OFP yet</span>');
   return `<div class="chips">${chips.join('')}</div>`;
 }
 const EXTRA_MIN = [0, 15, 30, 45, 60, 90];
+const needsCatering = trip => trip.kind !== 'ferry' && (trip.brief?.galley ?? 'cold') !== 'none';
+const zHm = ms => new Date(ms).toISOString().slice(11, 16) + 'Z';
+// planned off-blocks time: the charter's departure, or for a positioning leg, early enough to arrive by its deadline
+const planDep = trip => trip.kind === 'ferry' ? ts(trip.dep_at) - (plan(trip).bh + 0.25) * 36e5 : ts(trip.dep_at);
+const planArr = trip => planDep(trip) + plan(trip).bh * 36e5;
+const SERVICES = ['Passenger handling', 'Crew transport', 'Passenger car to the aircraft', 'GPU', 'Fuel uplift', 'Lavatory service', 'Potable water',
+  'Customs and immigration', 'VIP lounge', 'Hangar overnight', 'De-icing on standby', 'Cabin cleaning', 'Baggage handling'];
+function handCard(trip, end) {
+  const icao = end === 'dep' ? trip.from_icao : trip.to_icao, ap = D.airports[icao] || {}, h = trip['handling_' + end];
+  const head = `<div class="hhd"><span class="tag ${end === 'dep' ? 'won' : 'call'}">${end === 'dep' ? 'Departure' : 'Arrival'}</span><b>${icao}</b></div><p class="hint" style="margin:2px 0 8px">${esc(ap.name || '')}</p>`;
+  if (h) return `<div class="hcard done">${head}<p class="okline" style="margin:0">Confirmed by ${esc(h.agent)} · ref <span class="mono">${esc(h.ref)}</span></p>
+    <p class="hint" style="margin:6px 0 0">${esc(h.time || '')}${h.time ? ' · ' : ''}${(h.services || []).map(esc).join(', ') || 'Standard handling'}${h.fuel ? ` · fuel ${esc(h.fuel)}` : ''}</p></div>`;
+  return `<div class="hcard">${head}<button type="button" class="btn ${end === 'dep' ? 'pri' : ''}" data-act="handling" data-id="${trip.id}" data-end="${end}">Request handling</button></div>`;
+}
+function handlingModal(trip, end) {
+  const icao = end === 'dep' ? trip.from_icao : trip.to_icao, ap = D.airports[icao] || {}, b = trip.brief || {}, ferry = trip.kind === 'ferry';
+  const ac = acById(trip.aircraft_id), t = typeOf(ac), p = plan(trip), extraLb = Math.round(t.burn * (UI.extraMin || 0) / 60);
+  const fob = ac.fuel_lb != null ? +ac.fuel_lb : 0, uplift = Math.max(0, p.block + extraLb - fob);
+  const on = new Set(end === 'dep' ? ['Passenger handling', 'GPU', ...(uplift > 0 ? ['Fuel uplift'] : [])] : ['Passenger handling', 'Crew transport']);
+  if (trip.customs_needed) on.add('Customs and immigration');
+  if (ferry) { on.delete('Passenger handling'); on.add('Crew transport') }
+  if ((b.requests || []).some(r => /car to meet/i.test(r)) && end === 'arr') on.add('Passenger car to the aircraft');
+  const notes = end === 'arr' ? (b.requests || []).filter(r => /car|wheelchair|bag|ski|golf|guitar|dress|blanket/i.test(r)) : (b.requests || []).filter(r => /wheelchair|bag|ski|golf|guitar|dress|flowers/i.test(r));
+  const time = end === 'dep' ? `ETD ${zHm(planDep(trip))}` : `ETA ${zHm(planArr(trip))}`;
+  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Handling request" style="width:min(640px,100%)">
+  <div><h3 style="margin:0 0 4px">Handling request · ${icao}</h3><p class="muted" style="margin:0;font-size:13px">To the FBO at ${esc(ap.name || icao)}, ${esc(ap.city || '')} · ${trip.flt} ${ac.reg} ${esc(t.name)}</p></div>
+  <div class="row2"><div class="field"><label for="hTime">${end === 'dep' ? 'Departure' : 'Arrival'} time</label><input id="hTime" value="${time}"></div>
+   <div class="field"><label for="hPax">Passengers</label><input id="hPax" type="number" min="0" max="99" value="${ferry ? 0 : trip.pax}"></div></div>
+  <div class="field"><label>Services</label><div class="svc">${SERVICES.map((x, i) => `<label class="check"><input type="checkbox" data-svc="${esc(x)}" ${on.has(x) ? 'checked' : ''}> ${esc(x)}</label>`).join('')}</div></div>
+  ${end === 'dep' ? `<div class="field"><label for="hFuel">Fuel uplift</label><input id="hFuel" value="${uplift > 0 ? wt(Math.round(uplift / 100) * 100) : 'None needed'}"></div>` : ''}
+  <div class="field"><label for="hNotes">Notes for the handler</label><textarea id="hNotes" class="ta" rows="3">${esc(notes.join('. '))}</textarea></div>
+  <div class="err" id="hErr"></div>
+  <div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="button" class="btn pri" id="hSend">Send to ${esc(ap.city || icao)} FBO</button></div></div></div>`;
+  $('#hSend').onclick = async () => {
+    const req = { time: $('#hTime').value, pax: +$('#hPax').value, notes: $('#hNotes').value,
+      services: [...document.querySelectorAll('[data-svc]')].filter(x => x.checked).map(x => x.dataset.svc) };
+    if (end === 'dep' && req.services.includes('Fuel uplift')) req.fuel = $('#hFuel').value;
+    try { const r = await rpc('send_handling', { p_trip: trip.id, p_end: end, p_req: req }); closeModal(); toast(`${r.agent} confirmed your handling. Reference ${r.ref}.`, 'ok'); await afterChange() }
+    catch (e) { $('#hErr').textContent = e.message }
+  };
+}
+function cateringModal(trip) {
+  const b = trip.brief || {}, ap = D.airports[trip.from_icao] || {};
+  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Catering order" style="width:min(640px,100%)">
+  <div><h3 style="margin:0 0 4px">Catering order · ${trip.flt}</h3><p class="muted" style="margin:0;font-size:13px">Delivered to the aircraft at ${trip.from_icao} · ${trip.pax} passenger${trip.pax > 1 ? 's' : ''} · ${b.galley === 'full' ? 'full galley with ovens' : b.galley === 'warm' ? 'galley with a warming oven' : 'cold galley only'}</p></div>
+  <div class="row2"><div class="field"><label for="cDeliver">Deliver to the aircraft by</label><input id="cDeliver" value="${zHm(planDep(trip) - 45 * 6e4)}"></div><div class="field"><label>Supplier</label><input value="${esc(ap.city || trip.from_icao)} inflight catering" disabled></div></div>
+  <div class="field"><label for="cMenu">Food</label><textarea id="cMenu" class="ta" rows="2">${esc(b.catering || '')}</textarea></div>
+  <div class="field"><label for="cDrinks">Drinks</label><input id="cDrinks" value="${esc(b.drinks || '')}"></div>
+  <div class="field"><label for="cDiet">Dietary requirements</label><input id="cDiet" value="${esc((b.dietary || []).join('; '))}" placeholder="None"></div>
+  <div class="field"><label for="cNotes">Notes</label><textarea id="cNotes" class="ta" rows="2">${esc((b.requests || []).filter(r => /cake|champagne|cheese|canap|wine|flowers|card/i.test(r)).join('. '))}</textarea></div>
+  <div class="err" id="cErr"></div>
+  <div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="button" class="btn pri" id="cSend">Send catering order</button></div></div></div>`;
+  $('#cSend').onclick = async () => {
+    try { const r = await rpc('send_catering', { p_trip: trip.id, p_order: { deliver: $('#cDeliver').value, menu: $('#cMenu').value, drinks: $('#cDrinks').value, dietary: $('#cDiet').value, notes: $('#cNotes').value } });
+      closeModal(); toast(`${r.supplier} confirmed the order. Reference ${r.ref}.`, 'ok'); await afterChange() }
+    catch (e) { $('#cErr').textContent = e.message }
+  };
+}
+// the plan settings the pilot can change before generating
+function sbFields(trip) {
+  const ac = acById(trip.aircraft_id), t = typeOf(ac), p = plan(trip), kg = pref('weight') === 'kg', f = (UI.sb ||= {})[trip.id] ||= {};
+  const fltNum = (trip.flt.split(' ')[1] || '').replace(/\D/g, '');
+  const dep = new Date(planDep(trip)), b = trip.brief;
+  const rmk = b ? `CHARTER ${trip.client || ''}. ${briefLine(b)}`.toUpperCase().replace(/[^A-Z0-9 .,;:'\/-]/g, '').slice(0, 230) : (trip.kind === 'ferry' ? 'POSITIONING FLIGHT' : '');
+  const extraLb = Math.round(t.burn * (UI.extraMin || 0) / 60);
+  const o = { type: ac.type_code, orig: trip.from_icao, dest: trip.to_icao, altn: (f.altn || p.alt || '').toUpperCase(), airline: D.me.prefix, fltnum: fltNum,
+    callsign: D.me.prefix + fltNum, reg: ac.reg, pax: String(trip.kind === 'ferry' ? 0 : trip.pax), units: kg ? 'KGS' : 'LBS', manualrmk: rmk,
+    fl: f.fl && f.fl !== 'auto' ? String(+f.fl * 100) : String(p.fl * 100),
+    date: dep.toUTCString().slice(5, 16).replace(/ /g, '').toUpperCase().replace(/^(\d+)([A-Z]{3})\d\d(\d\d)$/, '$1$2$3'),
+    deph: String(dep.getUTCHours()), depm: String(dep.getUTCMinutes()), static_id: 'CDFS_' + trip.id, navlog: '1', maps: 'detail' };
+  if (f.route) o.route = f.route.toUpperCase();
+  if (f.ci) o.civalue = String(f.ci);
+  if (extraLb > 0) { o.addedfuel = String(Math.round(kg ? extraLb * 0.453592 : extraLb)); o.addedfuel_units = 'wgt' }
+  return o;
+}
 function simbriefUrl(trip, extraLb) {
   const ac = acById(trip.aircraft_id), p = plan(trip), kg = pref('weight') === 'kg';
   const fltNum = (trip.flt.split(' ')[1] || '').replace(/\D/g, '');
@@ -780,7 +858,7 @@ function renderPlanner(trip) {
   const ac = acById(trip.aircraft_id), t = typeOf(ac), p = plan(trip), A = D.airports[trip.from_icao], B = D.airports[trip.to_icao], b = trip.brief;
   UI.extraMin ??= trip.extra_fuel_min ?? 0;
   const extraLb = Math.round(t.burn * UI.extraMin / 60), blockLb = p.block + extraLb, fob = ac.fuel_lb != null ? +ac.fuel_lb : null;
-  const o = trip.ofp, kgOfp = o && /kg/i.test(o.units || '');
+  const o = trip.ofp, kgOfp = o && /kg/i.test(o.units || ''), sbf = (UI.sb ||= {})[trip.id] ||= {};
   const ofpWt = v => v == null || v === '' ? '—' : `${Math.round(+v).toLocaleString('en-US')} ${kgOfp ? 'kg' : 'lb'}`;
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><button type="button" class="linkbtn" data-act="planclose">← All trips</button>
    <h2 style="margin-top:6px">${trip.flt} · ${trip.from_icao} to ${trip.to_icao}</h2><p>${esc(A?.city)} to ${esc(B?.city)} · ${ac.reg} ${esc(t.name)} · ${trip.kind === 'ferry' ? `arrive ${trip.to_icao} by ${fmtDep(trip.dep_at, trip.to_icao)}` : `departs ${fmtDep(trip.dep_at, trip.from_icao)}`} · ${trip.kind === 'ferry' ? 'positioning, no passengers' : `${trip.pax} passenger${trip.pax > 1 ? 's' : ''}`}</p></div>${planChips(trip)}</div>
@@ -806,28 +884,43 @@ function renderPlanner(trip) {
      <p class="hint" style="margin:10px 0 6px">${fob == null ? 'Fuel on board is recorded by the tracker when this aircraft parks after a flight.' : `Recorded by the tracker when ${ac.reg} parked after its last flight. ${fob >= blockLb ? 'Enough on board already.' : `Uplift about ${wt(blockLb - fob)}.`}`}</p>
      <div class="field"><label>Extra fuel</label><div class="bands">${EXTRA_MIN.map(m => `<button type="button" class="chip" data-act="extra" data-m="${m}" aria-pressed="${UI.extraMin === m}">${m ? `+${m} min · ${wt(Math.round(t.burn * m / 60))}` : 'None'}</button>`).join('')}</div></div></div>
 
-    <div class="panel"><h3>Operational flight plan</h3>
-     ${D.me.simbrief_user ? `<p>SimBrief account: <b>${esc(D.me.simbrief_user)}</b> <button type="button" class="linkbtn" data-act="sbchange">change</button></p>` :
+    <div class="panel"><h3>Ground handling</h3>
+     <p class="hint" style="margin:0 0 10px">Book the FBOs at both ends before you leave. Unbooked handling costs reputation; getting everything arranged earns a little.</p>
+     <div class="hgrid">${handCard(trip, 'dep')}${handCard(trip, 'arr')}</div></div>
+
+    ${trip.kind === 'ferry' ? '' : `<div class="panel"><h3>Catering</h3>${!needsCatering(trip) ? `<p class="muted">The ${esc(t.name)} has no galley. Passengers get drinks and snacks from the cabin stock.</p>` : trip.catering_order
+      ? `<p class="okline">Ordered from ${esc(trip.catering_order.supplier)} · ref <span class="mono">${esc(trip.catering_order.ref)}</span>, delivered by ${esc(trip.catering_order.deliver || '')}.</p><p class="hint" style="margin:4px 0 0">${esc(trip.catering_order.menu || '')}${trip.catering_order.drinks ? ' · ' + esc(trip.catering_order.drinks) : ''}${trip.catering_order.dietary ? ' · ' + esc(trip.catering_order.dietary) : ''}</p>`
+      : `<p>The client asked for: ${esc(b?.catering || 'standard catering')}. Order it before departure, or the passengers go without.</p><button type="button" class="btn pri" data-act="catering" data-id="${trip.id}">Order catering</button>`}</div>`}
+
+    <div class="panel"><h3>Flight plan</h3>
+     ${D.me.simbrief_user ? `<p style="margin-top:0">SimBrief account: <b>${esc(D.me.simbrief_user)}</b> <button type="button" class="linkbtn" data-act="sbchange">change</button></p>` :
       `<form id="sbForm" class="row2" style="align-items:end"><div class="field"><label for="sbUser">Your SimBrief (Navigraph) username</label><input id="sbUser" autocomplete="off" placeholder="as shown in SimBrief account settings"></div><button type="submit" class="btn">Link SimBrief</button></form>`}
-     <ol class="steps" style="margin:10px 0">
-      <li>Generate the plan in SimBrief. It opens with this trip, the alternate, cruise level, passengers${extraLb ? `, ${wt(extraLb)} extra fuel` : ''} and the client's requests in the remarks.</li>
-      <li>Come back here and fetch it to issue the OFP.</li></ol>
-     <div class="btns"><a class="btn pri" href="${simbriefUrl(trip, extraLb)}" target="_blank" rel="noopener">Generate in SimBrief ↗</a>
-      <button type="button" class="btn" data-act="fetchofp" data-id="${trip.id}" ${D.me.simbrief_user ? '' : 'disabled title="Link your SimBrief username first"'}>Fetch my OFP</button></div>
-     <div class="err" id="ofpErr"></div>
+     <div class="sbgrid">
+      <div class="field"><label for="sbFl">Cruise level</label><select id="sbFl" data-sb="fl"><option value="auto">Suggested · FL${String(p.fl).padStart(3, '0')}</option>${Array.from({ length: Math.max(0, Math.floor((t.ceil || 410) / 10) - 4) }, (_, i) => (i + 5) * 10).reverse().map(fl => `<option value="${fl}" ${String(sbf.fl) === String(fl) ? 'selected' : ''}>FL${String(fl).padStart(3, '0')}</option>`).join('')}</select></div>
+      <div class="field"><label for="sbAltn">Alternate</label><input id="sbAltn" data-sb="altn" maxlength="4" style="text-transform:uppercase" value="${esc(sbf.altn || p.alt || '')}"></div>
+      <div class="field"><label for="sbCi">Cost index</label><input id="sbCi" data-sb="ci" type="number" min="0" max="999" placeholder="Default" value="${esc(sbf.ci || '')}"></div>
+      <div class="field"><label>Off blocks</label><input value="${zHm(planDep(trip))} · ${new Date(planDep(trip)).toUTCString().slice(5, 11)}" disabled></div>
+      <div class="field sbroute"><label for="sbRoute">Route</label><textarea id="sbRoute" data-sb="route" class="ta" rows="2" placeholder="Leave blank for SimBrief's suggested route">${esc(sbf.route || '')}</textarea></div>
+     </div>
+     <p class="hint" style="margin:4px 0 10px">${trip.kind === 'ferry' ? 'No passengers' : `${trip.pax} passenger${trip.pax > 1 ? 's' : ''}`}${extraLb ? ` · ${wt(extraLb)} extra fuel` : ''} · ${ac.reg} · callsign ${D.me.prefix}${(trip.flt.split(' ')[1] || '').replace(/\D/g, '')}${b ? ' · the client\'s requests go in the remarks' : ''}.</p>
+     <div class="btns"><button type="button" class="btn pri" data-act="sbgen" data-id="${trip.id}">${o ? 'Regenerate flight plan' : 'Generate flight plan'}</button>
+      <button type="button" class="btn" data-act="fetchofp" data-id="${trip.id}" ${D.me.simbrief_user ? '' : 'disabled title="Link your SimBrief username first"'}>Load my latest SimBrief plan</button></div>
+     <div class="sbstatus" id="ofpErr" role="status">${D.settings.simbrief_api ? '' : D.me.simbrief_user ? '' : 'Link your SimBrief username so the plan loads here automatically.'}</div>
      ${o ? `<div class="ofp"><div class="ofphd"><b>OFP ${esc(o.callsign || trip.flt)}</b><span>Issued ${fmtDate(o.saved_at || o.generated)}</span></div>
       <div class="grid4"><div class="kv"><label>Cruise</label><span>${esc(o.fl || '—')}</span></div><div class="kv"><label>Time en route</label><span>${o.ete ? hm(o.ete / 3600) : '—'}</span></div>
        <div class="kv"><label>Ramp fuel</label><span>${ofpWt(o.ramp)}</span></div><div class="kv"><label>Extra fuel</label><span>${ofpWt(o.extra)}</span></div>
        <div class="kv"><label>Landing fuel</label><span>${ofpWt(o.landing)}</span></div><div class="kv"><label>Alternate</label><span>${esc(o.altn || '—')}</span></div>
-       <div class="kv"><label>Distance</label><span>${o.dist ? o.dist + ' nm' : '—'}</span></div><div class="kv"><label>Airframe</label><span>${esc(o.type || ac.type_code)}</span></div></div>
+       <div class="kv"><label>Distance</label><span>${o.dist ? o.dist + ' nm' : '—'}</span></div><div class="kv"><label>Airframe</label><span>${esc(o.type || ac.type_code)}</span></div>
+       ${o.zfw ? `<div class="kv"><label>ZFW / TOW</label><span>${ofpWt(o.zfw)} / ${ofpWt(o.tow)}</span></div><div class="kv"><label>Landing weight</label><span>${ofpWt(o.ldw)}</span></div><div class="kv"><label>Cost index</label><span>${esc(o.ci ?? '—')}</span></div><div class="kv"><label>Average wind</label><span>${o.wind != null ? (o.wind > 0 ? '+' : '') + o.wind + ' kt' : '—'}</span></div>` : ''}</div>
       <p class="route-str mono">${esc(o.route || '')}</p>
       ${o.pdf ? `<a class="btn" href="${esc(o.pdf)}" target="_blank" rel="noopener">Open full OFP (PDF) ↗</a>` : ''}</div>` : ''}
     </div>
    </div>
    <div class="gcol"><div class="globebox"><canvas id="globe" aria-label="Route on the globe from ${trip.from_icao} to ${trip.to_icao}"></canvas>
-    <div class="globetools"><button type="button" class="btn" data-act="gzoom" data-z="-1" aria-label="Zoom out">−</button><button type="button" class="btn" data-act="gzoom" data-z="0">Whole globe</button><button type="button" class="btn" data-act="gzoom" data-z="1" aria-label="Zoom in">+</button></div>
+    <div class="globetools"><button type="button" class="btn" data-act="gzoom" data-z="-1" aria-label="Zoom out">−</button><button type="button" class="btn" data-act="gzoom" data-z="2">Fit route</button><button type="button" class="btn" data-act="gzoom" data-z="0">Whole globe</button><button type="button" class="btn" data-act="gzoom" data-z="1" aria-label="Zoom in">+</button></div>
     <p class="hint">Drag to turn the globe.</p></div></div>
   </div></div>`;
+  document.querySelectorAll('[data-sb]').forEach(el => el.oninput = el.onchange = () => { sbf[el.dataset.sb] = el.value.trim() });
   if ($('#sbForm')) $('#sbForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('set_simbrief', { p_user: $('#sbUser').value }), 'SimBrief linked.') };
   drawGlobe($('#globe'), trip, o);
 }
@@ -852,12 +945,15 @@ async function drawGlobe(cv, trip, ofp) {
   const route = { type: 'LineString', coordinates: [[A.lon, A.lat], [B.lon, B.lat]] };
   const mid = d3.geoInterpolate([A.lon, A.lat], [B.lon, B.lat])(0.5);
   const proj = d3.geoOrthographic().rotate([-mid[0], -mid[1]]).translate([W / 2, H / 2]).clipAngle(90);
-  const span = d3.geoDistance([A.lon, A.lat], [B.lon, B.lat]);
+  const fixes = (ofp?.fixes || []).filter(f => f[1] != null && f[2] != null).map(f => [+f[2], +f[1]]);
+  const pts = [[A.lon, A.lat], [B.lon, B.lat], ...(AL ? [[AL.lon, AL.lat]] : []), ...fixes];
+  const reach = Math.max(...pts.map(q => d3.geoDistance(q, mid)));       // furthest point from the centre, in radians
   const base = Math.min(W, H) / 2 * 0.92;
-  UI.globeZoom ??= 1;
+  // zoom so the route and alternate fill about three quarters of the view
+  GLOBE.fit = () => Math.min(60, Math.max(1, 0.78 / Math.sin(Math.min(Math.PI / 2, Math.max(reach, 0.004)))));
+  if (UI.globeTrip !== trip.id) { UI.globeTrip = trip.id; UI.globeZoom = GLOBE.fit() }
   proj.scale(base * UI.globeZoom);
-  GLOBE.redraw = () => { proj.scale(base * UI.globeZoom); draw() };
-  GLOBE.fit = () => Math.min(8, Math.max(1, 1.1 / Math.max(span, 0.03)));
+  GLOBE.redraw = () => { proj.rotate([-mid[0], -mid[1]]); proj.scale(base * UI.globeZoom); draw() };
   const path = d3.geoPath(proj, c), land = await landShapes(), grat = d3.geoGraticule10();
   const draw = () => {
     c.clearRect(0, 0, W, H);
@@ -866,7 +962,12 @@ async function drawGlobe(cv, trip, ofp) {
     if (land) { c.beginPath(); path(land); c.fillStyle = cssv('--map-land'); c.fill(); c.strokeStyle = cssv('--map-land-edge'); c.lineWidth = .6; c.stroke() }
     if (BORDERS) { c.beginPath(); path(BORDERS); c.strokeStyle = cssv('--map-border'); c.lineWidth = .5; c.stroke() }
     if (AL) { c.beginPath(); path({ type: 'LineString', coordinates: [[B.lon, B.lat], [AL.lon, AL.lat]] }); c.setLineDash([3, 4]); c.strokeStyle = cssv('--map-muted'); c.lineWidth = 1.2; c.stroke(); c.setLineDash([]) }
-    c.beginPath(); path(route); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'); c.lineWidth = 3; c.stroke();
+    if (fixes.length > 1) {
+      c.beginPath(); path(route); c.strokeStyle = cssv('--map-muted'); c.lineWidth = 1; c.setLineDash([2, 4]); c.stroke(); c.setLineDash([]);
+      c.beginPath(); path({ type: 'LineString', coordinates: [[A.lon, A.lat], ...fixes, [B.lon, B.lat]] }); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'); c.lineWidth = 3; c.stroke();
+      if (UI.globeZoom > 6) { c.font = '500 10px "DM Mono", monospace'; c.fillStyle = cssv('--map-muted');
+        (ofp.fixes || []).forEach((f, i) => { const q = proj([+f[2], +f[1]]); if (q && f[0] && i % Math.max(1, Math.round(fixes.length / 14)) === 0) { c.fillRect(q[0] - 1.5, q[1] - 1.5, 3, 3); c.fillText(f[0], q[0] + 4, q[1] + 10) } }) }
+    } else { c.beginPath(); path(route); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'); c.lineWidth = 3; c.stroke() }
     const dot = (a, label, col, r) => { const p = proj([a.lon, a.lat]); if (!p || d3.geoDistance([a.lon, a.lat], proj.invert([W / 2, H / 2])) > Math.PI / 2) return;
       c.beginPath(); c.arc(p[0], p[1], r, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
       c.font = '600 12px "DM Mono", monospace'; c.fillStyle = cssv('--map-label'); c.fillText(label, p[0] + 8, p[1] - 8) };
@@ -880,25 +981,68 @@ async function drawGlobe(cv, trip, ofp) {
   cv.onpointermove = e => { if (!drag) return; const k = 75 / proj.scale() * 4; proj.rotate([drag.r[0] + (e.clientX - drag.x) * k, Math.max(-90, Math.min(90, drag.r[1] - (e.clientY - drag.y) * k))]); draw() };
   cv.onpointerup = cv.onpointercancel = () => { drag = null };
 }
-async function fetchOfp(tripId) {
-  const trip = D.trips.find(t => t.id === tripId), user = D.me.simbrief_user;
-  $('#ofpErr').textContent = 'Fetching your latest SimBrief plan…';
-  let j;
+// ---------- SimBrief ----------
+const sbStatus = (msg, cls) => { const el = $('#ofpErr'); if (el) { el.textContent = msg || ''; el.className = 'sbstatus ' + (cls || '') } };
+let SB_POLL = null;
+async function sbLoad(tripId, ofpId, since) {
+  if (!since) sbStatus('Loading the plan from SimBrief…');
   try {
-    const r = await fetch(`https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(user)}&json=1`);
-    if (!r.ok) throw new Error(r.status === 400 ? `SimBrief doesn't recognise the username ${user}, or it has no plans yet.` : `SimBrief returned an error (${r.status}).`);
-    j = await r.json();
-  } catch (e) { $('#ofpErr').textContent = e.message.includes('Failed to fetch') ? 'Couldn\'t reach SimBrief. Check your connection and try again.' : e.message; return }
-  const g = (o, ...k) => k.reduce((x, y) => x == null ? x : x[y], o);
-  const ofp = { orig: g(j, 'origin', 'icao_code'), dest: g(j, 'destination', 'icao_code'), altn: g(j, 'alternate', 'icao_code'), route: g(j, 'general', 'route'),
-    fl: g(j, 'general', 'initial_altitude') ? 'FL' + String(Math.round(+g(j, 'general', 'initial_altitude') / 100)).padStart(3, '0') : null,
-    ramp: g(j, 'fuel', 'plan_ramp'), extra: g(j, 'fuel', 'extra'), landing: g(j, 'fuel', 'plan_landing'), units: g(j, 'params', 'units'),
-    ete: +g(j, 'times', 'est_time_enroute') || null, dist: +g(j, 'general', 'route_distance') || null, type: g(j, 'aircraft', 'icaocode'),
-    callsign: g(j, 'atc', 'callsign'), generated: g(j, 'params', 'time_generated') ? new Date(+g(j, 'params', 'time_generated') * 1000).toISOString() : null,
-    pdf: g(j, 'files', 'directory') && g(j, 'files', 'pdf', 'link') ? g(j, 'files', 'directory') + g(j, 'files', 'pdf', 'link') : null };
-  try { await rpc('save_ofp', { p_trip: tripId, p_ofp: ofp, p_extra_min: UI.extraMin || 0 }); toast(`OFP issued for ${trip.flt}.`, 'ok'); await afterChange() }
-  catch (e) { $('#ofpErr').textContent = e.message }
+    const r = await rpc('simbrief_import', { p_trip: tripId, p_ofp_id: ofpId, p_since: since });
+    if (r.status === 'loaded') { sbStop(); toast(`OFP issued for ${D.trips.find(t => t.id === tripId)?.flt || 'the flight'}.`, 'ok'); await afterChange(); return true }
+    return false;
+  } catch (e) { if (!since) sbStatus(e.message, 'bad'); else sbStatus('Waiting for SimBrief… ' + e.message, 'bad'); return false }
 }
+function sbStop() { if (SB_POLL) { clearInterval(SB_POLL.timer); try { SB_POLL.win && !SB_POLL.win.closed && SB_POLL.win.close() } catch (_) { } SB_POLL = null } }
+// keep checking the pilot's latest SimBrief plan until one for this trip appears
+function sbWatch(trip, win) {
+  sbStop();
+  const since = new Date().toISOString(), until = Date.now() + 15 * 60e3;
+  SB_POLL = { win, timer: setInterval(async () => {
+    if (!SB_POLL) return;
+    if (Date.now() > until) { sbStop(); sbStatus('Stopped waiting. When your plan is ready, press Load my latest SimBrief plan.'); return }
+    const done = await sbLoad(trip.id, null, since);
+    if (!done && SB_POLL) sbStatus(win && !win.closed ? 'Waiting for SimBrief: press Generate Flight in the SimBrief window. The plan loads here by itself.' : 'Waiting for SimBrief… the plan loads here as soon as it\'s generated.');
+  }, 6000) };
+  sbStatus('Waiting for SimBrief: press Generate Flight in the SimBrief window. The plan loads here by itself.');
+}
+window.addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data || !e.data.sbOfp) return;
+  const tripId = +(e.data.trip || localStorage.getItem('sbTrip') || 0);
+  if (tripId) { sbStop(); sbLoad(tripId, e.data.sbOfp, null) }
+});
+async function sbGenerate(trip) {
+  const f = sbFields(trip);
+  if (D.settings.simbrief_api) {
+    // SimBrief API: the plan is generated in a small window and comes straight back here
+    try {
+      const outputpage = new URL('simbrief-done.html', location.href.split('#')[0]).href;
+      const timestamp = Math.round(Date.now() / 1000);
+      const apicode = await rpc('simbrief_sign', { p_req: f.orig + f.dest + f.type + timestamp + outputpage });
+      try { localStorage.setItem('sbTrip', String(trip.id)) } catch (_) { }
+      const win = window.open('about:blank', 'SBworker', 'width=600,height=320,menubar=no,toolbar=no');
+      const form = document.createElement('form');
+      form.method = 'post'; form.action = 'https://www.simbrief.com/ofp/ofp.loader.api.php'; form.target = 'SBworker'; form.style.display = 'none';
+      Object.entries({ ...f, apicode, outputpage, timestamp: String(timestamp) }).forEach(([k, v]) => { const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; form.appendChild(i) });
+      document.body.appendChild(form); form.submit(); form.remove();
+      sbStatus('Generating with SimBrief… sign in to SimBrief in the small window if it asks.');
+      // if the window closes without reporting back, fall back to the pilot's latest plan
+      if (D.me.simbrief_user) { const watch = setInterval(() => { if (!win || win.closed) { clearInterval(watch); if (!SB_POLL) sbWatch(trip, null) } }, 1500) }
+      return;
+    } catch (e) { sbStatus(e.message, 'bad'); if (!D.me.simbrief_user) return }
+  }
+  if (!D.me.simbrief_user) { sbStatus('Link your SimBrief username first, so the plan can load here automatically.', 'bad'); $('#sbUser')?.focus(); return }
+  const q = new URLSearchParams(f);
+  const win = window.open('https://dispatch.simbrief.com/options/custom?' + q.toString(), 'SBdispatch', 'width=1180,height=860');
+  sbWatch(trip, win);
+}
+// coming back from SimBrief in this window (if SimBrief sends the whole page to the output page)
+(function sbReturn() {
+  const ps = new URLSearchParams(location.search), id = ps.get('sb_ofp');
+  if (!id) return;
+  history.replaceState(null, '', location.pathname + '#trips');
+  const go = () => { const t = +(ps.get('trip') || localStorage.getItem('sbTrip') || 0); if (D.me && t) { UI.tab = 'trips'; UI.plan = t; sbLoad(t, id, null) } else setTimeout(go, 800) };
+  setTimeout(go, 1500);
+})();
 
 /* ---------- live map ---------- */
 const planeSvg = (hdg, col) => `<svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${hdg}deg)"><path fill="${col}" stroke="#FFFFFF" stroke-width=".8" d="M12 2c.8 0 1.3.9 1.3 2v5.2l7.7 4.6v2l-7.7-2.3v4.6l2.2 1.7V21L12 20.1 8.5 21v-1.2l2.2-1.7v-4.6L3 15.8v-2l7.7-4.6V4c0-1.1.5-2 1.3-2z"/></svg>`;
@@ -1097,6 +1241,9 @@ async function renderStaff() {
   <div class="section"><div class="sechead"><div><h2>Airports</h2><p>${D.apList.length.toLocaleString('en-US')} active airports feed the request board. The worldwide list comes from OurAirports (public domain); refresh it to pick up any runway or position changes. Paste CSV rows to add or update many at once: ICAO, name, city, country, latitude, longitude, tags (biz, leisure, ski, long, separated by spaces).</p></div></div>
    <form class="panel" id="apForm" style="display:flex;flex-direction:column;gap:10px"><textarea class="ta" id="apCsv" placeholder="LFKC,Calvi Sainte-Catherine,Calvi,FR,42.5308,8.7933,leisure"></textarea><div class="btns"><button class="btn pri" type="submit">Import airports</button><button class="btn" type="button" id="apWorld">Refresh the worldwide list</button></div><div class="err" id="apErr"></div></form></div>
 
+  <div class="section"><div class="sechead"><div><h2>SimBrief</h2><p>${D.settings.simbrief_api ? '<b>API key set.</b> Pilots generate plans in a small SimBrief window and they load straight back into the planner.' : 'Without an API key, pilots press Generate in a SimBrief window and the plan loads here automatically. With a key from SimBrief support, generation happens in the background.'} The key is stored privately and never shown.</p></div></div>
+   <form class="panel row2" id="sbKeyForm" style="align-items:end"><div class="field"><label for="sbKey">SimBrief API key</label><input id="sbKey" type="password" autocomplete="off" placeholder="${D.settings.simbrief_api ? 'Leave blank and save to remove it' : 'Paste the key from SimBrief'}"></div><button class="btn pri" type="submit">Save key</button></form></div>
+
   <div class="section"><div class="sechead"><div><h2>Runways</h2><p>Runway threshold positions let flight reports show the runway used, touchdown distance past the threshold and centreline accuracy. <b id="rwCount">Checking…</b></p></div></div>
    <div class="panel" style="display:flex;flex-direction:column;gap:10px"><div class="btns"><button class="btn pri" type="button" id="rwLoad">Load runway data</button></div><div class="err" id="rwErr"></div></div></div>
 
@@ -1106,6 +1253,7 @@ async function renderStaff() {
    <td><button type="button" class="btn" data-act="adjust" data-id="${p.id}" data-cs="${esc(p.callsign)}">Adjust</button></td></tr>`).join('')}</tbody></table></div></div>`;
   $('#setForm').onsubmit = async e => { e.preventDefault(); await act(async () => { await rpc('admin_settings', { p_va_name: $('#sName').value, p_timezone: $('#sTz').value, p_start_cash: +$('#sCash').value, p_market_base: +$('#sBase').value, p_auto_accept: $('#sAuto').checked }); await loadStatic() }, 'Settings saved.') };
   sb.from('runways').select('icao', { count: 'exact', head: true }).then(({ count }) => { $('#rwCount') && ($('#rwCount').textContent = count ? `${count.toLocaleString('en-US')} runways loaded.` : 'No runway data loaded yet.') });
+  $('#sbKeyForm').onsubmit = async e => { e.preventDefault(); await act(async () => { const on = await rpc('admin_set_simbrief_key', { p_key: $('#sbKey').value }); await loadStatic(); toast(on ? 'SimBrief API key saved.' : 'SimBrief API key removed.', 'ok') }) };
   $('#rwLoad').onclick = async () => {
     $('#rwErr').textContent = 'Loading runway data…';
     try {
@@ -1214,8 +1362,11 @@ document.addEventListener('click', async e => {
   if (a === 'planclose') { UI.plan = null; renderTab() }
   if (a === 'extra') { UI.extraMin = +b.dataset.m; renderTab() }
   if (a === 'customs') await act(() => rpc('submit_customs', { p_trip: +id }), 'Customs declaration filed.');
-  if (a === 'fetchofp') fetchOfp(+id);
-  if (a === 'gzoom') { const z = +b.dataset.z; UI.globeZoom = z === 0 ? 1 : Math.min(GLOBE.fit ? GLOBE.fit() * 1.5 : 8, Math.max(1, (UI.globeZoom || 1) * (z > 0 ? 1.6 : 1 / 1.6))); GLOBE.redraw?.() }
+  if (a === 'fetchofp') sbLoad(+id, null, null);
+  if (a === 'gzoom') { const z = +b.dataset.z, fit = GLOBE.fit ? GLOBE.fit() : 8; UI.globeZoom = z === 0 ? 1 : z === 2 ? fit : Math.min(Math.max(80, fit * 2), Math.max(1, (UI.globeZoom || 1) * (z > 0 ? 1.6 : 1 / 1.6))); GLOBE.redraw?.() }
+  if (a === 'handling') handlingModal(D.trips.find(t => t.id === +id), b.dataset.end);
+  if (a === 'catering') cateringModal(D.trips.find(t => t.id === +id));
+  if (a === 'sbgen') sbGenerate(D.trips.find(t => t.id === +id));
   if (a === 'sbchange') { confirmBox('Change SimBrief account', `<div class="field" style="margin-top:8px"><label for="sbNew">SimBrief username</label><input id="sbNew" value="${esc(D.me.simbrief_user || '')}"></div>`, 'Save', () => rpc('set_simbrief', { p_user: $('#sbNew').value })) }
   if (a === 'ops') await act(() => rpc('set_ops', { p_ac: id, p_mode: b.dataset.mode }), b.dataset.mode === 'crew' ? 'Handed to your crew. They\'ll take the next job that comes up.' : 'Back under your control.');
   if (a === 'hire') { const tc = $('#hireType' + id).value, c = D.types[tc]; await act(() => rpc('hire_crew', { p_cand: +id, p_type: tc }), `Hired. Type rating course on the ${c.name} finishes in 12 hours.`) }
