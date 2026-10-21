@@ -69,6 +69,7 @@ public sealed class MainForm : Form
         BackColor = Theme.Card, ForeColor = Theme.Muted, Font = Theme.Mono(8.75f)
     };
 
+    TableLayoutPanel _flightCol;
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 250 };
     readonly System.Windows.Forms.Timer _connect = new() { Interval = 5000 };
 
@@ -141,16 +142,17 @@ public sealed class MainForm : Form
             using var fs = Theme.Semi(14f);
             TextRenderer.DrawText(g, "Charter Desk", title, new Point(56, 12), Theme.Text);
             var w = TextRenderer.MeasureText(g, "Charter Desk", title, Size.Empty, TextFormatFlags.NoPadding).Width;
-            TextRenderer.DrawText(g, "FS", fs, new Point(56 + w + 12, 17), Theme.Gold, TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, "FS", fs, new Point(56 + w + 10, 14), Theme.Gold, TextFormatFlags.NoPadding);
             using var sub = Theme.Semi(7.75f);
             TextRenderer.DrawText(g, "FLIGHT TRACKER", sub, new Point(58, 38), Theme.Muted);
         };
-        header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Line });
+
         var right = new FlowLayoutPanel { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Theme.Header, Padding = new Padding(0, 14, 16, 0) };
         _setup.Margin = new Padding(0, 0, 0, 0);
         _setup.BackColor = Theme.Header;
         right.Controls.AddRange(new Control[] { _setup, _simPill, _pilot });
         header.Controls.Add(right);
+        header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Line });
         _simPill.Set("Waiting for the sim", Theme.Muted);
         return header;
     }
@@ -188,7 +190,7 @@ public sealed class MainForm : Form
 
     Control BuildFlight()
     {
-        var col = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Theme.Bg, Margin = new Padding(0), AutoScroll = true };
+        var col = _flightCol = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Theme.Bg, Margin = new Padding(0), AutoScroll = true };
         for (int i = 0; i < 4; i++) col.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         col.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
 
@@ -700,6 +702,12 @@ public sealed class MainForm : Form
         using var bmp = new Bitmap(Width, Height);
         DrawToBitmap(bmp, new Rectangle(0, 0, Width, Height));
         bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+        // a second picture scrolled to the landing report
+        _flightCol.AutoScrollPosition = new Point(0, _score.Top);
+        Application.DoEvents(); Refresh(); Application.DoEvents();
+        using var bmp2 = new Bitmap(Width, Height);
+        DrawToBitmap(bmp2, new Rectangle(0, 0, Width, Height));
+        bmp2.Save(Path.ChangeExtension(path, null) + "-report.png", System.Drawing.Imaging.ImageFormat.Png);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

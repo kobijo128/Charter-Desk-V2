@@ -41,11 +41,13 @@ jobs:
         run: |
           git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
           Move-Item tracker-screenshot.png $env:RUNNER_TEMP/shot.png -Force
+          Move-Item tracker-screenshot-report.png $env:RUNNER_TEMP/shot2.png -Force
           git fetch origin ci-screens 2>$null
           if ($LASTEXITCODE -eq 0) { git checkout -f -B ci-screens FETCH_HEAD } else { git checkout --orphan ci-screens; git rm -rf . -q }
           $global:LASTEXITCODE = 0
           Copy-Item $env:RUNNER_TEMP/shot.png tracker-screenshot.png -Force
-          git add tracker-screenshot.png
+          Copy-Item $env:RUNNER_TEMP/shot2.png tracker-screenshot-report.png -Force
+          git add tracker-screenshot.png tracker-screenshot-report.png
           git commit -m "Tracker screenshot from $env:GITHUB_SHA" --allow-empty -q
           git push -f origin ci-screens -q
       - name: Publish as the latest release
