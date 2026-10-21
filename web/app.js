@@ -905,7 +905,7 @@ function renderPlanner(trip) {
      <p class="hint" style="margin:4px 0 10px">${trip.kind === 'ferry' ? 'No passengers' : `${trip.pax} passenger${trip.pax > 1 ? 's' : ''}`}${extraLb ? ` · ${wt(extraLb)} extra fuel` : ''} · ${ac.reg} · callsign ${D.me.prefix}${(trip.flt.split(' ')[1] || '').replace(/\D/g, '')}${b ? ' · the client\'s requests go in the remarks' : ''}.</p>
      <div class="btns"><button type="button" class="btn pri" data-act="sbgen" data-id="${trip.id}">${o ? 'Regenerate flight plan' : 'Generate flight plan'}</button>
       <button type="button" class="btn" data-act="fetchofp" data-id="${trip.id}" ${D.me.simbrief_user ? '' : 'disabled title="Link your SimBrief username first"'}>Load my latest SimBrief plan</button></div>
-     <div class="sbstatus" id="ofpErr" role="status">${D.settings.simbrief_api ? '' : D.me.simbrief_user ? '' : 'Link your SimBrief username so the plan loads here automatically.'}</div>
+     <div class="sbstatus" id="ofpErr" role="status">${D.me.simbrief_user ? '' : 'Link your SimBrief username so the plan loads here automatically.'}</div>
      ${o ? `<div class="ofp"><div class="ofphd"><b>OFP ${esc(o.callsign || trip.flt)}</b><span>Issued ${fmtDate(o.saved_at || o.generated)}</span></div>
       <div class="grid4"><div class="kv"><label>Cruise</label><span>${esc(o.fl || '—')}</span></div><div class="kv"><label>Time en route</label><span>${o.ete ? hm(o.ete / 3600) : '—'}</span></div>
        <div class="kv"><label>Ramp fuel</label><span>${ofpWt(o.ramp)}</span></div><div class="kv"><label>Extra fuel</label><span>${ofpWt(o.extra)}</span></div>
@@ -1010,9 +1010,10 @@ window.addEventListener('message', e => {
   const tripId = +(e.data.trip || localStorage.getItem('sbTrip') || 0);
   if (tripId) { sbStop(); sbLoad(tripId, e.data.sbOfp, null) }
 });
+const SB_API_ENABLED = false; // the SimBrief API-key flow is built but switched off for now
 async function sbGenerate(trip) {
   const f = sbFields(trip);
-  if (D.settings.simbrief_api) {
+  if (SB_API_ENABLED && D.settings.simbrief_api) {
     // SimBrief API: the plan is generated in a small window and comes straight back here
     try {
       const outputpage = new URL('simbrief-done.html', location.href.split('#')[0]).href;
@@ -1241,8 +1242,8 @@ async function renderStaff() {
   <div class="section"><div class="sechead"><div><h2>Airports</h2><p>${D.apList.length.toLocaleString('en-US')} active airports feed the request board. The worldwide list comes from OurAirports (public domain); refresh it to pick up any runway or position changes. Paste CSV rows to add or update many at once: ICAO, name, city, country, latitude, longitude, tags (biz, leisure, ski, long, separated by spaces).</p></div></div>
    <form class="panel" id="apForm" style="display:flex;flex-direction:column;gap:10px"><textarea class="ta" id="apCsv" placeholder="LFKC,Calvi Sainte-Catherine,Calvi,FR,42.5308,8.7933,leisure"></textarea><div class="btns"><button class="btn pri" type="submit">Import airports</button><button class="btn" type="button" id="apWorld">Refresh the worldwide list</button></div><div class="err" id="apErr"></div></form></div>
 
-  <div class="section"><div class="sechead"><div><h2>SimBrief</h2><p>${D.settings.simbrief_api ? '<b>API key set.</b> Pilots generate plans in a small SimBrief window and they load straight back into the planner.' : 'Without an API key, pilots press Generate in a SimBrief window and the plan loads here automatically. With a key from SimBrief support, generation happens in the background.'} The key is stored privately and never shown.</p></div></div>
-   <form class="panel row2" id="sbKeyForm" style="align-items:end"><div class="field"><label for="sbKey">SimBrief API key</label><input id="sbKey" type="password" autocomplete="off" placeholder="${D.settings.simbrief_api ? 'Leave blank and save to remove it' : 'Paste the key from SimBrief'}"></div><button class="btn pri" type="submit">Save key</button></form></div>
+  ${SB_API_ENABLED ? `<div class="section"><div class="sechead"><div><h2>SimBrief</h2><p>${D.settings.simbrief_api ? '<b>API key set.</b> Pilots generate plans in a small SimBrief window and they load straight back into the planner.' : 'Without an API key, pilots press Generate in a SimBrief window and the plan loads here automatically. With a key from SimBrief support, generation happens in the background.'} The key is stored privately and never shown.</p></div></div>
+   <form class="panel row2" id="sbKeyForm" style="align-items:end"><div class="field"><label for="sbKey">SimBrief API key</label><input id="sbKey" type="password" autocomplete="off" placeholder="${D.settings.simbrief_api ? 'Leave blank and save to remove it' : 'Paste the key from SimBrief'}"></div><button class="btn pri" type="submit">Save key</button></form></div>` : ''}
 
   <div class="section"><div class="sechead"><div><h2>Runways</h2><p>Runway threshold positions let flight reports show the runway used, touchdown distance past the threshold and centreline accuracy. <b id="rwCount">Checking…</b></p></div></div>
    <div class="panel" style="display:flex;flex-direction:column;gap:10px"><div class="btns"><button class="btn pri" type="button" id="rwLoad">Load runway data</button></div><div class="err" id="rwErr"></div></div></div>
@@ -1253,7 +1254,7 @@ async function renderStaff() {
    <td><button type="button" class="btn" data-act="adjust" data-id="${p.id}" data-cs="${esc(p.callsign)}">Adjust</button></td></tr>`).join('')}</tbody></table></div></div>`;
   $('#setForm').onsubmit = async e => { e.preventDefault(); await act(async () => { await rpc('admin_settings', { p_va_name: $('#sName').value, p_timezone: $('#sTz').value, p_start_cash: +$('#sCash').value, p_market_base: +$('#sBase').value, p_auto_accept: $('#sAuto').checked }); await loadStatic() }, 'Settings saved.') };
   sb.from('runways').select('icao', { count: 'exact', head: true }).then(({ count }) => { $('#rwCount') && ($('#rwCount').textContent = count ? `${count.toLocaleString('en-US')} runways loaded.` : 'No runway data loaded yet.') });
-  $('#sbKeyForm').onsubmit = async e => { e.preventDefault(); await act(async () => { const on = await rpc('admin_set_simbrief_key', { p_key: $('#sbKey').value }); await loadStatic(); toast(on ? 'SimBrief API key saved.' : 'SimBrief API key removed.', 'ok') }) };
+  if ($('#sbKeyForm')) $('#sbKeyForm').onsubmit = async e => { e.preventDefault(); await act(async () => { const on = await rpc('admin_set_simbrief_key', { p_key: $('#sbKey').value }); await loadStatic(); toast(on ? 'SimBrief API key saved.' : 'SimBrief API key removed.', 'ok') }) };
   $('#rwLoad').onclick = async () => {
     $('#rwErr').textContent = 'Loading runway data…';
     try {
