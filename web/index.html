@@ -17,7 +17,8 @@
     <div class="gauges">
       <div class="gauge cash"><label>Balance</label><span id="gCash"></span></div>
       <div class="gauge"><label>Reputation</label><span id="gRep"></span><div class="repbar"><i id="gRepBar"></i></div></div>
-      <div class="gauge"><label id="gClockLabel">Local time</label><span id="gClock"></span></div>
+      <div class="gauge"><label id="gLocalLabel">Local</label><span id="gLocal"></span></div>
+      <div class="gauge"><label>UTC</label><span id="gUtc"></span></div>
       <button class="iconbtn" id="soundBtn" data-act="sound" type="button">Ringer off</button>
       <button class="iconbtn" data-act="signout" type="button">Sign out</button>
     </div>
@@ -31,6 +32,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="vendor/tz.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>

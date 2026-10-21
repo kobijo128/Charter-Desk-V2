@@ -82,7 +82,16 @@ function nm(a, b) { const A = D.airports[a], B = D.airports[b]; return A && B ? 
 function brg(a, b) { const A = D.airports[a], B = D.airports[b]; const y = Math.sin((B.lon - A.lon) * R) * Math.cos(B.lat * R); const x = Math.cos(A.lat * R) * Math.sin(B.lat * R) - Math.sin(A.lat * R) * Math.cos(B.lat * R) * Math.cos((B.lon - A.lon) * R); return (Math.atan2(y, x) / R + 360) % 360 }
 const blockH = (t, d) => d <= 0 ? 0 : d / t.ktas + 0.33;
 const upg = k => (D.me?.upgrades || {})[k] || 0;
-const opRate = t => t.rate * 0.55 * (1 - 0.05 * upg('crew'));
+const opRate = t => t.rate * 0.35 * (1 - 0.05 * upg('crew'));
+const thisYear = () => new Date().getUTCFullYear();
+const acAge = y => Math.max(0, thisYear() - y);
+const acValue = (t, y) => Math.round(t.price_new * (0.25 + 0.75 * Math.exp(-acAge(y) / 9)) / 1000) * 1000;
+const rmul = y => Math.max(0.65, 1 - 0.012 * acAge(y));
+const acRate = ac => typeOf(ac).rate * rmul(ac.year);
+const loanMonthly = (p, years) => { const r = (D.settings.loan_apr ?? 0.05) / 12; return p <= 0 ? 0 : r === 0 ? Math.round(p / (years * 12)) : Math.round(p * r / (1 - Math.pow(1 + r, -years * 12))) };
+const modelYears = t => { const out = []; for (let y = Math.min(t.year_to, thisYear()); y >= Math.max(t.year_from, thisYear() - 40); y--) out.push(y); return out };
+const mny = n => { const v = toLocal(n); return v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 1 : 2).replace(/\.0$/, '') + 'M' : null };
+const bigMoney = n => { const m = mny(n); return m ? cur().sym + m : kmoney(n) };
 const repoFactor = () => 1 - 0.25 * upg('empty');
 const rwy = icao => D.airports[icao]?.rwy_ft ?? 6000;
 const rwyOk = (t, r) => rwy(r.from_icao) >= t.min_rwy_ft && rwy(r.to_icao) >= t.min_rwy_ft;
@@ -98,7 +107,8 @@ function quote(ac, r, from) {
   const t = typeOf(ac), loc = from || futureLoc(ac);
   const repoNm = loc === r.from_icao ? 0 : nm(loc, r.from_icao);
   const bh = blockH(t, r.dist), rh = blockH(t, repoNm);
-  return { loc, repoNm, bh, rh, basis: t.rate * bh, guide: Math.round(t.rate * bh / 100) * 100, repoCost: Math.round(opRate(t) * rh * repoFactor()), fair: Math.round((t.rate * bh + 0.55 * t.rate * rh) / 100) * 100, opc: Math.round(opRate(t) * (bh + rh * repoFactor())) };
+  const rate = t.rate * rmul(ac.year);
+  return { loc, repoNm, bh, rh, basis: rate * bh, guide: Math.round(rate * bh / 100) * 100, repoCost: Math.round(opRate(t) * rh * repoFactor()), fair: Math.round((rate * bh + 0.55 * rate * rh) / 100) * 100, opc: Math.round(opRate(t) * (bh + rh * repoFactor())) };
 }
 function winOdds(r, ac, amount) {
   const qd = quote(ac, r), t = typeOf(ac), cl = D.clients.find(c => c.name === r.client) || { bud_lo: 0.95, bud_hi: 1.2 };
@@ -129,13 +139,29 @@ function plan(trip) {
 
 /* ---------- time ---------- */
 const utc = () => pref('time') === 'utc';
-const shift = ms => utc() ? new Date(ms + new Date(ms).getTimezoneOffset() * 60000) : new Date(ms); // render UTC with local getters
-function fmtDep(ts) {
-  if (!ts) return '—'; const d = shift(new Date(ts).getTime()), n = shift(Date.now()); const t = `${pad(d.getHours())}:${pad(d.getMinutes())}${utc() ? 'Z' : ''}`;
-  const day = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(n).setHours(0, 0, 0, 0)) / 864e5);
-  return day === 0 ? `Today ${t}` : day === 1 ? `Tmrw ${t}` : day === -1 ? `Yday ${t}` : `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })} ${t}`;
+const TZC = {};
+function tzOf(icao) {
+  if (!icao) return 'UTC';
+  if (TZC[icao]) return TZC[icao];
+  const a = D.airports[icao]; let z = 'UTC';
+  try { if (a && window.tzlookup) z = window.tzlookup(a.lat, a.lon) } catch (e) { }
+  return TZC[icao] = z;
 }
-const fmtDate = ts => shift(new Date(ts).getTime()).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + (utc() ? 'Z' : '');
+const FMT = {};
+function partsIn(ms, tz) {
+  const f = FMT[tz] ||= new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' });
+  const o = {}; for (const p of f.formatToParts(new Date(ms))) o[p.type] = p.value; return o;
+}
+const hhmm = (ms, tz) => { const p = partsIn(ms, tz); return `${p.hour}:${p.minute}` };
+// departure-style time: in UTC, or local at the given airport
+function fmtDep(v, icao) {
+  if (!v) return '—';
+  const tz = utc() || !icao ? 'UTC' : tzOf(icao), p = partsIn(ts(v), tz), n = partsIn(Date.now(), tz);
+  const day = Math.round((Date.UTC(+p.year, +p.month - 1, +p.day) - Date.UTC(+n.year, +n.month - 1, +n.day)) / 864e5);
+  const t = `${p.hour}:${p.minute}${tz === 'UTC' ? 'Z' : ' LT'}`;
+  return day === 0 ? `Today ${t}` : day === 1 ? `Tmrw ${t}` : day === -1 ? `Yday ${t}` : `${p.weekday} ${+p.day} ${t}`;
+}
+const fmtDate = v => { const tz = utc() ? 'UTC' : Intl.DateTimeFormat().resolvedOptions().timeZone; const p = partsIn(ts(v), tz); return `${p.day}/${p.month} ${p.hour}:${p.minute}${tz === 'UTC' ? 'Z' : ''}` };
 function mmss(ms) { ms = Math.max(0, ms); const s = Math.ceil(ms / 1000); return s >= 3600 ? `${Math.floor(s / 3600)}h ${pad(Math.floor(s % 3600 / 60))}m` : `${Math.floor(s / 60)}:${pad(s % 60)}` }
 const ts = v => new Date(v).getTime();
 
@@ -247,21 +273,21 @@ const SETTINGS_FIELDS = [
   ['currency', 'Currency', [['USD', 'US dollar ($)'], ['GBP', 'Pound sterling (£)'], ['EUR', 'Euro (€)']]],
   ['weight', 'Fuel and payload', [['lb', 'Pounds (lb)'], ['kg', 'Kilograms (kg)']]],
   ['distance', 'Distance', [['nm', 'Nautical miles (nm)'], ['km', 'Kilometres (km)'], ['mi', 'Statute miles (mi)']]],
-  ['time', 'Times shown in', [['local', 'My local time'], ['utc', 'UTC (Zulu)']]]];
+  ['time', 'Flight times shown in', [['local', 'Local time at each airport'], ['utc', 'UTC (Zulu)']]]];
 const settingsFields = (vals, idp) => SETTINGS_FIELDS.map(([k, l, opts]) => `<div class="field"><label for="${idp}${k}">${l}</label><select id="${idp}${k}" data-pref="${k}">${opts.map(([v, t]) => `<option value="${v}" ${vals[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`).join('');
 const readSettings = idp => Object.fromEntries(SETTINGS_FIELDS.map(([k]) => [k, $('#' + idp + k).value]));
 
 async function renderOnboarding() {
   const taken = (await q(sb.from('fleet').select('reg').limit(10000)).catch(() => [])).map(x => x.reg);
-  const starters = D.typeList.filter(t => t.starter);
+  const starters = D.typeList.filter(t => t.starter).sort((a, b) => a.price_new - b.price_new);
   const home0 = D.airports[D.settings.start_home] ? D.settings.start_home : D.apList[0]?.icao;
-  const st = { type: starters.find(t => t.code === D.settings.start_type)?.code || starters[0]?.code, regTouched: false };
+  const st = { type: starters.find(t => t.code === D.settings.start_type)?.code || starters[0]?.code, regTouched: false, year: null };
   const countryCur = c => ['GB', 'JE', 'GG'].includes(c) ? 'GBP' : EURO.includes(c) ? 'EUR' : 'USD';
   const startPrefs = { ...PREF_DEFAULTS, currency: countryCur(D.airports[home0]?.country) };
   PREFS_OVERRIDE = startPrefs;
   const opts = D.apList.map(a => `<option value="${a.icao}">${esc(a.city)} · ${esc(a.name)}</option>`).join('');
   $('#main').innerHTML = `<div class="authwrap"><form class="authcard wide" id="obForm" novalidate>
-    <div><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> and one aircraft of your choice at your home base.</p></div>
+    <div><div class="authlogo"><svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M6 28 L14 6 L20 6 L16 20 L28 20 L28 28 Z" fill="#B88A3A"></path></svg><b>Charter Desk <span>FS</span></b></div><h1>Found your company</h1><p style="margin-top:6px">You start with <b id="obCash"></b> in the bank and one aircraft of your choice at your home base, fully financed over 20 years. Payments come out every 30 days, so keep flying.</p></div>
     <h3 class="obh">1 · Pilot and company</h3>
     <div class="row2"><div class="field"><label for="obCs">Pilot callsign</label><input id="obCs" maxlength="8" placeholder="ALT001" autocomplete="off"></div>
     <div class="field"><label for="obName">Your name</label><input id="obName" maxlength="40" autocomplete="name"></div></div>
@@ -270,6 +296,8 @@ async function renderOnboarding() {
     <div class="field"><label for="obHome">Home base (ICAO)</label><input id="obHome" list="obHomeList" value="${home0}" maxlength="4" autocomplete="off" style="text-transform:uppercase"><datalist id="obHomeList">${opts}</datalist><span class="hint" id="obHomeHint"></span></div></div>
     <h3 class="obh">2 · Starter aircraft</h3>
     <div class="starters" id="obTypes"></div>
+    <div class="row2"><div class="field"><label for="obYear">Model year</label><select id="obYear"></select></div>
+    <div class="field"><label>Finance</label><div class="finbox" id="obFin"></div></div></div>
     <div class="row2"><div class="field"><label for="obReg">Registration</label><input id="obReg" maxlength="9" autocomplete="off" style="text-transform:uppercase"><span class="hint" id="obRegHint"></span></div>
     <div class="field"><label>&nbsp;</label><button type="button" class="btn" id="obRegNew">Suggest another</button></div></div>
     <h3 class="obh">3 · Settings</h3>
@@ -279,8 +307,16 @@ async function renderOnboarding() {
   const drawTypes = () => {
     $('#obTypes').innerHTML = starters.map(t => `<button type="button" class="starter" data-type="${t.code}" aria-pressed="${t.code === st.type}">
       <span class="sh"><b>${esc(t.name)}</b><span class="mono">${t.code}</span></span><span class="muted">${esc(t.cls)}</span>
-      <span class="specs"><span><label>Seats</label>${t.seats}</span><span><label>Range</label>${dist(t.range_nm)}</span><span><label>Cruise</label>${t.ktas} kt</span><span><label>Earns</label>${kmoney(t.rate)}/h</span></span></button>`).join('');
+      <span class="specs"><span><label>Seats</label>${t.seats}</span><span><label>Range</label>${dist(t.range_nm)}</span><span><label>Cruise</label>${t.ktas} kt</span><span><label>Earns (new)</label>${kmoney(t.rate)}/h</span></span></button>`).join('');
     $('#obCash').textContent = money(D.settings.start_cash);
+    const t = D.types[st.type], yrs = modelYears(t);
+    if (!yrs.includes(st.year)) st.year = yrs.find(y => acAge(y) >= 10) ?? yrs[yrs.length - 1];
+    $('#obYear').innerHTML = yrs.map(y => `<option value="${y}" ${y === st.year ? 'selected' : ''}>${y}${acAge(y) === 0 ? ' · new' : acAge(y) === 1 ? ' · 1 year old' : ` · ${acAge(y)} years old`}</option>`).join('');
+    drawFin();
+  };
+  const drawFin = () => {
+    const t = D.types[st.type], v = acValue(t, st.year);
+    $('#obFin').innerHTML = `<b>${bigMoney(v)}</b> aircraft · <b>${money(loanMonthly(v, 20))}</b> a month<br><span class="hint">Earns about ${kmoney(t.rate * rmul(st.year))} an hour flown; running costs ${kmoney(opRate(t))}/h.</span>`;
   };
   const homeCode = () => $('#obHome').value.trim().toUpperCase();
   const country = () => D.airports[homeCode()]?.country;
@@ -290,6 +326,7 @@ async function renderOnboarding() {
     $('#obRegHint').className = 'hint ' + (r && !ok ? 'bad' : r ? 'good' : ''); return ok };
   const suggest = () => { $('#obReg').value = suggestReg(country(), $('#obPx').value || 'ABC', taken); checkReg() };
   drawTypes(); suggest(); checkHome();
+  $('#obYear').onchange = () => { st.year = +$('#obYear').value; drawFin() };
   $('#obTypes').onclick = e => { const b = e.target.closest('[data-type]'); if (b) { st.type = b.dataset.type; drawTypes() } };
   $('#obRegNew').onclick = () => { st.regTouched = false; suggest() };
   $('#obReg').oninput = () => { st.regTouched = true; checkReg() };
@@ -307,8 +344,8 @@ async function renderOnboarding() {
     const sa = D.airports[homeCode()], stt = D.types[st.type];
     if (sa.rwy_ft < stt.min_rwy_ft) { $('#obErr').textContent = `${sa.icao}'s runway is too short for the ${stt.name}. Pick another aircraft or home base.`; return }
     try {
-      await rpc('ensure_pilot', { p_callsign: $('#obCs').value, p_name: $('#obName').value, p_company: $('#obCo').value, p_prefix: $('#obPx').value,
-        p_home: homeCode(), p_type: st.type, p_reg: $('#obReg').value.trim().toUpperCase(), p_prefs: readSettings('obP') });
+      await rpc('found_company', { p_callsign: $('#obCs').value, p_name: $('#obName').value, p_company: $('#obCo').value, p_prefix: $('#obPx').value,
+        p_home: homeCode(), p_type: st.type, p_year: st.year, p_reg: $('#obReg').value.trim().toUpperCase(), p_prefs: readSettings('obP') });
       PREFS_OVERRIDE = null; boot();
     } catch (err) { $('#obErr').textContent = err.message }
   };
@@ -325,7 +362,11 @@ function renderHeader() {
   $('#tabs').innerHTML = TABS.filter(t => t[0] !== 'staff' || D.me.is_admin).map(([k, l]) =>
     `<a href="#${k}" data-tab="${k}" ${UI.tab === k ? 'aria-current="page"' : ''}>${l}${counts[k] ? `<span class="ct">${counts[k]}</span>` : ''}</a>`).join('');
 }
-function clock() { const d = shift(Date.now()); $('#gClock').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${utc() ? 'Z' : ''}`; $('#gClockLabel').textContent = utc() ? 'UTC' : 'Local time' }
+function clock() {
+  const now = Date.now(); $('#gUtc').textContent = hhmm(now, 'UTC') + 'Z';
+  const ac = D.me && active(); if (!ac) return;
+  const tz = tzOf(ac.loc); $('#gLocalLabel').textContent = `Local · ${ac.loc}`; $('#gLocal').textContent = hhmm(now, tz);
+}
 function updateCountdowns() {
   const now = Date.now();
   document.querySelectorAll('[data-cd]').forEach(e => e.textContent = mmss(+e.dataset.cd - now));
@@ -343,7 +384,7 @@ function renderCall() {
   <div class="avatar" aria-hidden="true">${esc(initials)}</div>
   <div class="who"><b>${esc(c.caller)}</b><span>${esc(c.client)} · rings off in <span data-cd="${ts(c.expires_at)}"></span></span></div>
   <div class="msg"><q>${esc(CALL_LINES[c.line % 4](c, A, B))}</q>
-   <div class="line"><span>${c.from_icao} → ${c.to_icao}</span><span>${dist(c.dist)} · ${fmtDep(c.dep_at)}</span></div>
+   <div class="line"><span>${c.from_icao} → ${c.to_icao}</span><span>${dist(c.dist)} · ${fmtDep(c.dep_at, c.from_icao)}</span></div>
    <div class="line" style="align-items:baseline"><span>Offering</span><span class="offer">${money(c.offer)}</span></div>
    ${el.length > 1 ? `<select class="sel" id="callAc" aria-label="Aircraft">${el.map(a => `<option value="${a.id}">${a.reg} · ${a.type_code} at ${futureLoc(a)}</option>`).join('')}</select>` : el.length ? `<div class="line"><span>Aircraft</span><span>${el[0].reg} at ${futureLoc(el[0])}</span></div>` : '<div class="line"><span>None of your aircraft can fly this job.</span></div>'}</div>
   <div class="answer">
@@ -384,7 +425,7 @@ function renderMarket() {
    <p class="muted" style="font-size:12px;margin:10px 0 0">Block time in the ${esc(t.name)}, including taxi and climb.</p></div>
   <div class="panel"><h3>${esc(t.name)}</h3><div class="specs">
    <div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div>
-   <div><label>Seats</label><span>${t.seats}</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div>
+   <div><label>Seats</label><span>${t.seats}</span></div><div><label>Charter rate</label><span>${kmoney(acRate(ac))}/h</span></div>
    <div><label>Op. cost</label><span>${kmoney(opRate(t))}/h</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div></div></div>
  </aside>
  <section style="min-width:0">
@@ -411,7 +452,7 @@ function strip({ r, ok, q: qd }, ac) {
   <div class="where"><span class="cities">${esc(A.city || r.from_icao)} <i>to</i> ${esc(B.city || r.to_icao)}</span>
    <span class="sub"><b>${r.from_icao} – ${r.to_icao}</b> · ${esc(r.client)} · ${r.pax} passenger${r.pax > 1 ? 's' : ''} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span>
    ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first</span>` : ''}</div>
-  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at)}</b></span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
+  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at, r.from_icao)}</b></span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
   <div class="act">${act}</div></article>`;
 }
 
@@ -436,7 +477,7 @@ function tripCard(trip) {
   <div class="flt"><b>${trip.flt}</b><span class="muted">${ac.reg} · ${esc(t.name)}</span>${ferry ? '<span class="tag ferry">Positioning</span>' : `<span class="tag ${trip.source === 'call' ? 'call' : 'won'}">${trip.source === 'call' ? 'Phone booking' : 'Won bid'}</span>`}${state}</div>
   <div><div class="route">${trip.from_icao}<i>▸</i>${trip.to_icao}</div><div class="places">${esc(A?.name)}, ${esc(A?.city)} to ${esc(B?.name)}, ${esc(B?.city)}${ferry ? ' · empty' : ` · ${esc(trip.caller ? trip.caller + ' (' + trip.client + ')' : trip.client)}`}</div></div>
   <div class="grid4">
-   <div class="kv"><label>${ferry ? 'Position by' : 'Departs'}</label><span>${fmtDep(trip.dep_at)}</span></div>
+   <div class="kv"><label>${ferry ? 'Position by' : 'Departs'}</label><span>${fmtDep(trip.dep_at, trip.from_icao)}</span></div>
    <div class="kv"><label>Distance</label><span>${dist(trip.dist)}</span></div>
    <div class="kv"><label>Est. block</label><span>${hm(p.bh)}</span></div>
    <div class="kv"><label>Cruise</label><span>FL${p.fl}</span></div>
@@ -481,28 +522,70 @@ function drawMap(cv, trip) {
 
 function renderHangar() {
   const used = D.fleet.length;
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Hangar</h2><p>${used} of ${D.me.slots} fleet slots in use. Aircraft stay wherever their last flight ended.</p></div></div>
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Hangar</h2><p>${used} of ${D.me.slots} fleet slots in use. Aircraft stay wherever their last flight ended. Finance payments come out every 30 days.</p></div></div>
   <form class="panel" id="coForm" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap"><div class="field" style="flex:1;min-width:200px"><label for="coInput">Company name</label><input id="coInput" maxlength="40" value="${esc(D.me.company)}"></div>
    <div class="field" style="width:120px"><label for="pxInput">Flight prefix</label><input id="pxInput" maxlength="3" value="${esc(D.me.prefix)}"></div><button class="btn pri" type="submit">Save</button></form>
-  <div class="cards">${D.fleet.map(a => { const t = typeOf(a), n = queue(a).length; return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}</p>
-  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div><div><label>Legs queued</label><span>${n}</span></div><div><label>Seats / range</label><span>${t.seats} / ${dist(t.range_nm)}</span></div></div>
+  <div class="cards">${D.fleet.map(a => {
+    const t = typeOf(a), n = queue(a).length, val = acValue(t, a.year), loan = +a.loan_balance || 0, net = Math.round(val * 0.92 - loan);
+    return `<div class="card ${a.id === active()?.id ? 'active' : ''}"><div class="hd"><b class="mono">${a.reg}</b><span>${a.year} · ${a.type_code}</span></div><p>${esc(t.name)} · ${esc(t.cls)}</p>
+  <div class="specs"><div><label>Location</label><span>${a.loc} ${esc(D.airports[a.loc]?.city || '')}</span></div><div><label>Hours flown</label><span>${hm(a.hours)}</span></div>
+   <div><label>Market value</label><span>${bigMoney(val)}</span></div><div><label>Charter rate</label><span>${kmoney(acRate(a))}/h</span></div>
+   <div><label>Loan</label><span>${loan > 0 ? bigMoney(loan) : 'Owned outright'}</span></div><div><label>${loan > 0 ? 'Monthly payment' : 'Legs queued'}</label><span>${loan > 0 ? `${kmoney(a.loan_payment)} · ${fmtDate(a.loan_next_due).split(' ')[0]}` : n}</span></div></div>
   <div class="foot">${a.id === active()?.id ? '<span class="tag won">Bidding aircraft</span>' : `<button type="button" class="btn" data-act="pickac" data-id="${a.id}">Bid with this</button>`}
   <button type="button" class="btn" data-act="rereg" data-id="${a.id}">Change registration</button>
-  ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" ${n ? 'disabled title="Finish or cancel its trips first"' : ''}>Sell ${kmoney(Math.round(t.price * 0.6))}</button>` : ''}</div></div>` }).join('')}
+  ${loan > 0 ? `<button type="button" class="btn" data-act="repay" data-id="${a.id}" ${D.me.cash < loan ? 'disabled title="Not enough cash to pay it off"' : ''}>Pay off loan</button>` : ''}
+  ${D.fleet.length > 1 ? `<button type="button" class="btn danger" data-act="sell" data-id="${a.id}" data-net="${net}" ${n ? 'disabled title="Finish or cancel its trips first"' : ''}>Sell · ${net < 0 ? '−' : ''}${bigMoney(Math.abs(net))}</button>` : ''}</div></div>` }).join('')}
   ${Array.from({ length: Math.max(0, D.me.slots - used) }, () => `<div class="card" style="border-style:dashed;justify-content:center;align-items:center;text-align:center;min-height:180px"><p>Empty slot</p><a class="btn" href="#shop" data-tab="shop">Add an aircraft</a></div>`).join('')}</div></div>`;
   $('#coForm').onsubmit = async e => { e.preventDefault(); await act(() => rpc('update_company', { p_company: $('#coInput').value, p_prefix: $('#pxInput').value }), 'Company details saved.') };
 }
 
+const SHOP_CATS = [['piston', 'Pistons'], ['turboprop', 'Turboprops'], ['light', 'Very light & light jets'], ['mid', 'Midsize & super-midsize'], ['large', 'Large & ultra-long-range']];
 function renderShop() {
   const free = D.me.slots - D.fleet.length, slotCost = 60000 * 2 ** (D.me.slots - 2), cash = D.me.cash;
-  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>Each aircraft takes a fleet slot and is delivered to your home base, ${D.me.home}. Prices are the lease deposit. ${free ? `You have ${free} free slot${free > 1 ? 's' : ''}.` : 'All slots are full, so buy a slot first.'}</p></div>
-  <div class="card" style="min-width:min(300px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
- <div class="cards">${D.typeList.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length; return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)}${own ? ` · ${own} in fleet` : ''}</p>
-  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Fuel burn</label><span>${wtRate(t.burn)}</span></div></div>
-  <div class="foot"><span class="price">${kmoney(t.price)}</span><button type="button" class="btn ${free && cash >= t.price ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free || cash < t.price ? 'disabled' : ''}>Add to fleet</button></div></div>` }).join('')}</div></div>
+  UI.shopCat ||= 'light';
+  const list = D.typeList.filter(t => t.category === UI.shopCat).sort((a, b) => a.price_new - b.price_new);
+  $('#main').innerHTML = `<div class="section"><div class="sechead"><div><h2>Aircraft</h2><p>New and used, priced by age. Older aircraft cost less but earn lower charter rates. Pay in full, or finance with a 15% deposit over 15 years. Aircraft are delivered to ${D.me.home}. ${free ? `You have ${free} free fleet slot${free > 1 ? 's' : ''}.` : 'All fleet slots are full, so buy a slot first.'}</p></div>
+  <div class="card" style="min-width:min(280px,100%)"><div class="hd"><b>Fleet slot ${D.me.slots + 1}</b><span class="price">${kmoney(slotCost)}</span></div><button type="button" class="btn pri" data-act="buyslot" ${cash < slotCost ? 'disabled' : ''}>Buy slot</button></div></div>
+  <div class="bands" role="tablist">${SHOP_CATS.map(([k, l]) => `<button type="button" class="chip" role="tab" data-act="shopcat" data-k="${k}" aria-pressed="${UI.shopCat === k}">${l} · ${D.typeList.filter(t => t.category === k).length}</button>`).join('')}</div>
+ <div class="cards">${list.map(t => { const own = D.fleet.filter(a => a.type_code === t.code).length, yrs = modelYears(t), oldest = yrs[yrs.length - 1], cheapest = acValue(t, oldest), isNew = t.year_to >= thisYear();
+   return `<div class="card"><div class="hd"><b>${esc(t.name)}</b><span>${t.code}</span></div><p>${esc(t.cls)} · built ${t.year_from}${t.year_to >= thisYear() ? ' to today' : `–${t.year_to}`}${own ? ` · ${own} in fleet` : ''}</p>
+  <div class="specs"><div><label>Seats</label><span>${t.seats}</span></div><div><label>Range</label><span>${dist(t.range_nm)}</span></div><div><label>Cruise</label><span>${t.ktas} kt</span></div><div><label>Charter rate (new)</label><span>${kmoney(t.rate)}/h</span></div><div><label>Min. runway</label><span>${ft(t.min_rwy_ft)}</span></div><div><label>Crew</label><span>${t.crew_req === 1 ? 'Single pilot' : 'Two pilots'}</span></div></div>
+  <div class="foot"><span style="display:flex;flex-direction:column"><span class="price">${isNew ? bigMoney(t.price_new) + ' new' : 'Used only'}</span><span class="hint">Used from ${bigMoney(cheapest)} (${oldest})</span></span><button type="button" class="btn ${free ? 'pri' : ''}" data-act="buyac" data-k="${t.code}" ${!free ? 'disabled' : ''}>Choose</button></div></div>` }).join('')}</div></div>
  <div class="section"><div class="sechead"><div><h2>Company upgrades</h2><p>Permanent improvements to how your desk wins and runs work.</p></div></div>
  <div class="cards">${Object.entries(UPG).map(([k, u]) => { const l = upg(k), c = u.cost[l]; return `<div class="card"><div class="hd"><b>${u.name}</b><div class="pips">${u.cost.map((_, i) => `<i class="${i < l ? 'on' : ''}"></i>`).join('')}</div></div><p>${u.desc}</p>
   <div class="foot">${l >= u.cost.length ? '<span class="tag won">Maxed</span>' : `<span class="price">${kmoney(c)}</span><button type="button" class="btn ${cash >= c ? 'pri' : ''}" data-act="upg" data-k="${k}" ${cash < c ? 'disabled' : ''}>Level ${l + 1}</button>`}</div></div>` }).join('')}</div></div>`;
+}
+
+async function buyBox(code) {
+  const t = D.types[code], taken = (await q(sb.from('fleet').select('reg').limit(10000)).catch(() => [])).map(x => x.reg);
+  const yrs = modelYears(t), y0 = yrs.find(y => acAge(y) >= 8) ?? yrs[yrs.length - 1];
+  $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><form class="modal" id="buyForm" role="dialog" aria-modal="true" aria-label="Buy ${esc(t.name)}">
+   <div><h3>${esc(t.cls)}</h3><div class="route">${esc(t.name)}</div></div>
+   <div class="row2"><div class="field"><label for="byYear">Model year</label><select id="byYear">${yrs.map(y => `<option value="${y}" ${y === y0 ? 'selected' : ''}>${y}${acAge(y) === 0 ? ' · new' : acAge(y) === 1 ? ' · 1 year old' : ` · ${acAge(y)} years old`}</option>`).join('')}</select></div>
+   <div class="field"><label for="byReg">Registration</label><input id="byReg" maxlength="9" value="${suggestReg(D.airports[D.me.home]?.country, D.me.prefix, taken)}" autocomplete="off" style="text-transform:uppercase"><span class="hint" id="byRegHint"></span></div></div>
+   <div class="grid4"><div class="kv"><label>Price</label><span id="byPrice"></span></div><div class="kv"><label>Charter rate</label><span id="byRate"></span></div><div class="kv"><label>Running cost</label><span>${kmoney(opRate(t))}/h</span></div><div class="kv"><label>Your cash</label><span>${money(D.me.cash)}</span></div></div>
+   <div class="field"><label>Payment</label>
+    <label class="check pay"><input type="radio" name="byPay" value="cash" id="byCash"> <span>Pay in full · <b id="byFull"></b></span></label>
+    <label class="check pay"><input type="radio" name="byPay" value="finance" id="byFin" checked> <span>Finance · <b id="byDep"></b> deposit, then <b id="byMonthly"></b> a month for 15 years</span></label></div>
+   <div class="err" id="byErr"></div>
+   <div class="btns" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button type="submit" class="btn pri" id="byGo">Buy aircraft</button></div></form></div>`;
+  const upd = () => {
+    const y = +$('#byYear').value, v = acValue(t, y), dep = Math.round(v * 0.15), fin = $('#byFin').checked;
+    $('#byPrice').textContent = bigMoney(v); $('#byRate').textContent = `${kmoney(t.rate * rmul(y))}/h`;
+    $('#byFull').textContent = money(v); $('#byDep').textContent = money(dep); $('#byMonthly').textContent = money(loanMonthly(v - dep, 15));
+    const need = fin ? dep : v, r = $('#byReg').value.trim().toUpperCase(), regOk = REG_RE.test(r) && !taken.includes(r);
+    $('#byRegHint').textContent = taken.includes(r) ? 'Already used in the VA.' : regOk ? '' : 'Use a country prefix and dash (G-ABCD) or an N-number (N123AB).';
+    $('#byRegHint').className = 'hint ' + (regOk ? '' : 'bad');
+    $('#byErr').textContent = D.me.cash < need ? `You need ${money(need)} for this option.` : '';
+    $('#byGo').disabled = D.me.cash < need || !regOk;
+  };
+  $('#buyForm').oninput = upd; upd();
+  $('#buyForm').onsubmit = async e => {
+    e.preventDefault();
+    const y = +$('#byYear').value, reg = $('#byReg').value.trim().toUpperCase();
+    try { await rpc('purchase_aircraft', { p_type: code, p_year: y, p_reg: reg, p_finance: $('#byFin').checked }); closeModal(); toast(`${y} ${t.name} ${reg} delivered to ${D.me.home}.`, 'ok'); await afterChange() }
+    catch (err) { $('#byErr').textContent = err.message }
+  };
 }
 
 async function renderLedger() {
@@ -664,7 +747,7 @@ async function renderStaff() {
 function openBid(r) {
   const ac = active(), qd = quote(ac, r);
   $('#modal').innerHTML = `<div class="scrim" data-act="scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Quote for request">
-  <div><h3 style="margin:0 0 4px">Quote · REQ ${r.id} · ${esc(r.client)}</h3><div class="route">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="muted" style="font-size:13px">${esc(D.airports[r.from_icao]?.city)} to ${esc(D.airports[r.to_icao]?.city)} · ${r.pax} pax · departs ${fmtDep(r.dep_at)}</div></div>
+  <div><h3 style="margin:0 0 4px">Quote · REQ ${r.id} · ${esc(r.client)}</h3><div class="route">${r.from_icao}<i>▸</i>${r.to_icao}</div><div class="muted" style="font-size:13px">${esc(D.airports[r.from_icao]?.city)} to ${esc(D.airports[r.to_icao]?.city)} · ${r.pax} pax · departs ${fmtDep(r.dep_at, r.from_icao)}</div></div>
   <div class="grid4"><div class="kv"><label>Aircraft</label><span>${ac.reg}</span></div><div class="kv"><label>Block</label><span>${hm(qd.bh)}</span></div>
    <div class="kv"><label>Positioning</label><span>${qd.repoNm ? `${dist(qd.repoNm)} · ${kmoney(qd.repoCost)}` : 'None'}</span></div><div class="kv"><label>Op. cost</label><span>${kmoney(qd.opc)}</span></div></div>
   <div class="field"><label for="bidAmt">Your price (${pref('currency')})</label><div class="amount"><span>${cur().sym}</span><input id="bidAmt" inputmode="numeric" value="${Math.round(toLocal(qd.guide) / 100) * 100}"></div>
@@ -725,18 +808,19 @@ document.addEventListener('click', async e => {
   if (a === 'declinecall') { await act(() => rpc('decline_call', { p_call: +id })); $('#call').dataset.id = '' }
   if (a === 'copyplan') {
     const tr = D.trips.find(x => x.id === +id), p = plan(tr), ac = p.ac;
-    const txt = `${tr.flt}  ${ac.reg} (${ac.type_code})\n${tr.from_icao} → ${tr.to_icao}  ALTN ${p.alt}\nDEP ${fmtDep(tr.dep_at)}  PAX ${tr.pax}  PAYLOAD ${wt(p.payload)}\nDIST ${dist(tr.dist)}  FL${p.fl}  EST BLOCK ${hm(p.bh)}\nFUEL trip ${wt(p.tripFuel)} / altn ${wt(p.altFuel)} / res ${wt(p.res)} / taxi ${wt(p.taxi)} = ${wt(p.block)}`;
+    const txt = `${tr.flt}  ${ac.reg} (${ac.type_code})\n${tr.from_icao} → ${tr.to_icao}  ALTN ${p.alt}\nDEP ${fmtDep(tr.dep_at, tr.from_icao)}  PAX ${tr.pax}  PAYLOAD ${wt(p.payload)}\nDIST ${dist(tr.dist)}  FL${p.fl}  EST BLOCK ${hm(p.bh)}\nFUEL trip ${wt(p.tripFuel)} / altn ${wt(p.altFuel)} / res ${wt(p.res)} / taxi ${wt(p.taxi)} = ${wt(p.block)}`;
     try { await navigator.clipboard.writeText(txt); toast('Flight plan copied.', 'ok') } catch (_) { confirmBox('Flight plan', `<pre class="code" style="white-space:pre-wrap">${esc(txt)}</pre>`, 'Done', async () => { }) }
   }
   if (a === 'outsource') confirmBox('Use a contract crew?', `A contract crew positions the aircraft for ${money(+b.dataset.cost)}. You won't need to fly this leg.`, 'Pay and position', () => rpc('outsource_ferry', { p_trip: +id }));
   if (a === 'cancel') { const tr = D.trips.find(x => x.id === +id); confirmBox(`Cancel ${tr.flt}?`, `${esc(tr.client)} will need another operator. You'll pay a ${money(Math.round(tr.price * 0.2))} cancellation fee and lose 5 reputation.`, 'Cancel trip', () => rpc('cancel_trip', { p_trip: +id })) }
   if (a === 'buyslot') await act(() => rpc('buy_slot'), 'New fleet slot ready.');
-  if (a === 'buyac') regBox(`Add a ${D.types[b.dataset.k].name}`, `The lease deposit is ${money(D.types[b.dataset.k].price)}. It will be delivered to ${D.me.home}.`, 'Add to fleet', null,
-    async reg => { await rpc('buy_aircraft', { p_type: b.dataset.k, p_reg: reg }); toast(`${D.types[b.dataset.k].name} ${reg} delivered to ${D.me.home}.`, 'ok') });
+  if (a === 'buyac') buyBox(b.dataset.k).catch(err => toast(err.message, 'bad'));
+  if (a === 'shopcat') { UI.shopCat = b.dataset.k; renderTab() }
+  if (a === 'repay') { const ac = acById(id); confirmBox(`Pay off the loan on ${ac.reg}?`, `${money(ac.loan_balance)} comes out of your balance now, and the monthly payments stop.`, 'Pay off loan', () => rpc('repay_loan', { p_ac: id })) }
   if (a === 'rereg') { const ac = acById(id); regBox(`Re-register ${ac.reg}`, `Choose a new registration for your ${esc(typeOf(ac).name)}. It's free, and every pilot will see the new one.`, 'Save registration', ac.id,
     async reg => { await rpc('set_registration', { p_ac: id, p_reg: reg }); toast(`${ac.reg} is now ${reg}.`, 'ok') }) }
   if (a === 'upg') await act(() => rpc('buy_upgrade', { p_key: b.dataset.k }), `${UPG[b.dataset.k].name} upgraded.`);
-  if (a === 'sell') { const ac = acById(id), t = typeOf(ac); confirmBox(`Sell ${ac.reg}?`, `The ${esc(t.name)} returns to the lessor and you recover ${money(Math.round(t.price * 0.6))} of the deposit.`, 'Sell aircraft', async () => { await rpc('sell_aircraft', { p_ac: id }); if (UI.acId === id) UI.acId = null }) }
+  if (a === 'sell') { const ac = acById(id), t = typeOf(ac), net = +b.dataset.net; confirmBox(`Sell ${ac.reg}?`, `The ${ac.year} ${esc(t.name)} sells for ${money(Math.round(acValue(t, ac.year) * 0.92))} after an 8% broker fee${+ac.loan_balance > 0 ? `, and ${money(ac.loan_balance)} of that repays its loan` : ''}. You ${net < 0 ? 'pay' : 'receive'} ${money(Math.abs(net))}.`, 'Sell aircraft', async () => { await rpc('sell_aircraft', { p_ac: id }); if (UI.acId === id) UI.acId = null }) }
   if (a === 'pirep') openPirep(+id, false).catch(err => toast(err.message, 'bad'));
   if (a === 'pirepstaff') openPirep(+id, true).catch(err => toast(err.message, 'bad'));
   if (a === 'review') { const note = $('#rvNote')?.value || ''; try { await rpc('admin_review', { p_pirep: +id, p_accept: b.dataset.ok === '1', p_note: note }); closeModal(); toast('Review saved.', 'ok'); renderTab() } catch (err) { toast(err.message, 'bad') } }

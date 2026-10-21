@@ -280,3 +280,9 @@ input[type=range]{width:100%;accent-color:var(--navy)}
   .boardhead h2{font-size:26px}
 }
 .amount input,.amount input:focus{border:0!important;box-shadow:none!important;padding:0!important;background:transparent!important}
+.finbox{background:var(--brass-bg);border:1px solid #EADFC9;border-radius:8px;padding:9px 12px;font-size:13.5px;line-height:1.45}
+label.check.pay{color:var(--ink);font-size:13.5px;align-items:flex-start;padding:8px 0}
+label.check.pay input{margin-top:3px}
+.starters{grid-template-columns:repeat(auto-fill,minmax(165px,1fr))}
+.field input[type=radio],.field input[type=checkbox]{width:auto;padding:0}
+label.check.pay{display:flex;gap:10px}
