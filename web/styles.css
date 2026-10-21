@@ -11,7 +11,7 @@
   --radius:12px;
   --accent:#0E1A2B; --accent-hover:#1B2B44; --on-accent:#F3F5F8; --line-strong:#C4CDD8; --brass-line:#EADFC9;
   --navy-line:#2C3D57; --on-navy-soft:#C8D0DB; --focus-ring:rgba(14,26,43,.08); --scrim:rgba(14,26,43,.45); --shadow:rgba(14,26,43,.22);
-  --map-sea:#EEF2F6; --map-land:#F7F4EC; --map-land-edge:#C9C2B0; --map-grid:rgba(14,26,43,.08); --map-dot:#D3DAE3; --map-route:#0E1A2B; --map-label:#0E1A2B; --map-muted:#8A95A6; --map-mark:#8A6526;
+  --map-sea:#D3E1EE; --map-land:#F6F1E5; --map-land-edge:#BDB197; --map-border:rgba(120,104,72,.45); --map-grid:rgba(14,26,43,.08); --map-dot:#D3DAE3; --map-route:#0E1A2B; --map-label:#0E1A2B; --map-muted:#8A95A6; --map-mark:#8A6526;
 
   color-scheme:light;
 }
@@ -21,7 +21,7 @@
   --brass:#D9B776; --brass-light:#D4B06A; --brass-bg:#231E14; --brass-line:#3A3122;
   --ok:#5CC48D; --ok-bg:#15301F; --bad:#F07A72; --bad-bg:#3A1B19; --warn:#E3AE4F; --warn-bg:#33270F; --info:#71B6EA; --info-bg:#132A3E;
   --accent:#D4B06A; --accent-hover:#E2C58B; --on-accent:#141008; --focus-ring:rgba(212,176,106,.2); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.5);
-  --map-sea:#0F1C2C; --map-land:#1E2A3A; --map-land-edge:#33445C; --map-grid:rgba(231,236,243,.07); --map-dot:#2B3A52; --map-route:#D4B06A; --map-label:#E7ECF3; --map-muted:#7D8BA0; --map-mark:#D4B06A;
+  --map-sea:#081220; --map-land:#24344B; --map-land-edge:#3E5677; --map-border:rgba(160,184,214,.28); --map-grid:rgba(231,236,243,.07); --map-dot:#2B3A52; --map-route:#D4B06A; --map-label:#E7ECF3; --map-muted:#7D8BA0; --map-mark:#D4B06A;
   color-scheme:dark;
 }}
 :root[data-theme="dark"]{
@@ -30,7 +30,7 @@
   --brass:#D9B776; --brass-light:#D4B06A; --brass-bg:#231E14; --brass-line:#3A3122;
   --ok:#5CC48D; --ok-bg:#15301F; --bad:#F07A72; --bad-bg:#3A1B19; --warn:#E3AE4F; --warn-bg:#33270F; --info:#71B6EA; --info-bg:#132A3E;
   --accent:#D4B06A; --accent-hover:#E2C58B; --on-accent:#141008; --focus-ring:rgba(212,176,106,.2); --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.5);
-  --map-sea:#0F1C2C; --map-land:#1E2A3A; --map-land-edge:#33445C; --map-grid:rgba(231,236,243,.07); --map-dot:#2B3A52; --map-route:#D4B06A; --map-label:#E7ECF3; --map-muted:#7D8BA0; --map-mark:#D4B06A;
+  --map-sea:#081220; --map-land:#24344B; --map-land-edge:#3E5677; --map-border:rgba(160,184,214,.28); --map-grid:rgba(231,236,243,.07); --map-dot:#2B3A52; --map-route:#D4B06A; --map-label:#E7ECF3; --map-muted:#7D8BA0; --map-mark:#D4B06A;
   color-scheme:dark;
 }
 *{box-sizing:border-box}
@@ -351,3 +351,4 @@ table.crewtab .sel{max-width:130px}
 .cabincard q{font-size:14.5px;line-height:1.5;quotes:"“" "”"}
 .cabinbtns{display:flex;flex-direction:column;gap:6px}
 .cabinbtns .btn{justify-content:flex-start;white-space:normal;text-align:left}
+.gonow{display:block;font-style:normal;font-size:11px;font-weight:800;color:var(--ok);letter-spacing:.02em;margin-top:2px}

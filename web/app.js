@@ -176,6 +176,7 @@ function fmtDep(v, icao) {
 const fmtDate = v => { const tz = utc() ? 'UTC' : Intl.DateTimeFormat().resolvedOptions().timeZone; const p = partsIn(ts(v), tz); return `${p.day}/${p.month} ${p.hour}:${p.minute}${tz === 'UTC' ? 'Z' : ''}` };
 function mmss(ms) { ms = Math.max(0, ms); const s = Math.ceil(ms / 1000); return s >= 3600 ? `${Math.floor(s / 3600)}h ${pad(Math.floor(s % 3600 / 60))}m` : `${Math.floor(s / 60)}:${pad(s % 60)}` }
 const ts = v => new Date(v).getTime();
+const relTime = v => { const m = Math.max(0, Math.round((ts(v) - Date.now()) / 60000)); return m >= 60 ? `${Math.floor(m / 60)}h ${pad(m % 60)}m` : `${m} min` };
 
 /* ---------- toasts and sound ---------- */
 function toast(msg, kind) { const el = document.createElement('div'); el.className = 'toast ' + (kind || ''); el.textContent = msg; $('#toasts').prepend(el); setTimeout(() => el.remove(), 5500); while ($('#toasts').children.length > 4) $('#toasts').lastChild.remove() }
@@ -485,7 +486,7 @@ function strip({ r, ok, q: qd }, ac) {
   <div class="where"><span class="cities">${esc(A.city || r.from_icao)} <i>to</i> ${esc(B.city || r.to_icao)}</span>
    <span class="sub"><b>${r.from_icao} – ${r.to_icao}</b> · ${esc(r.client)} · ${r.pax} passenger${r.pax > 1 ? 's' : ''} · ${r.npc} quoting${r.player_bids ? ` + ${r.player_bids} VA` : ''}</span>
    ${ok && qd.repoNm ? `<span class="repo">Positioning ${dist(qd.repoNm)} from ${qd.loc} first</span>` : ''}</div>
-  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at, r.from_icao)}</b></span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
+  <div class="facts"><span><label>Departs</label><b>${fmtDep(r.dep_at, r.from_icao)}</b>${ts(r.dep_at) - Date.now() < 2.5 * 36e5 ? `<em class="gonow">Go now · in ${relTime(r.dep_at)}</em>` : ''}</span><span><label>Flight time</label><b>${hm(blockH(t, r.dist))}</b></span><span><label>Distance</label><b>${dist(r.dist)}</b></span><span><label>Market rate</label><b class="money">${ok ? kmoney(qd.guide) : '—'}</b></span></div>
   <div class="act">${act}</div></article>`;
 }
 
@@ -511,7 +512,7 @@ function tripCard(trip) {
   <div class="flt"><b>${trip.flt}</b><span class="muted">${ac.reg} · ${esc(t.name)}</span>${ferry ? '<span class="tag ferry">Positioning</span>' : `<span class="tag ${trip.source === 'call' ? 'call' : 'won'}">${trip.source === 'call' ? 'Phone booking' : 'Won bid'}</span>`}${state}</div>
   <div><div class="route">${trip.from_icao}<i>▸</i>${trip.to_icao}</div><div class="places">${esc(A?.name)}, ${esc(A?.city)} to ${esc(B?.name)}, ${esc(B?.city)}${ferry ? ' · empty' : ` · ${esc(trip.caller ? trip.caller + ' (' + trip.client + ')' : trip.client)}`}</div></div>
   <div class="grid4">
-   <div class="kv"><label>${ferry ? 'Position by' : 'Departs'}</label><span>${fmtDep(trip.dep_at, trip.from_icao)}</span></div>
+   <div class="kv"><label>${ferry ? `Arrive ${trip.to_icao} by` : 'Departs'}</label><span>${fmtDep(trip.dep_at, ferry ? trip.to_icao : trip.from_icao)}</span></div>
    <div class="kv"><label>Distance</label><span>${dist(trip.dist)}</span></div>
    <div class="kv"><label>Est. block</label><span>${hm(p.bh)}</span></div>
    <div class="kv"><label>Cruise</label><span>FL${p.fl}</span></div>
@@ -536,7 +537,35 @@ function tripCard(trip) {
   ${!first && trip.status === 'booked' ? `<div class="waiting">Fly ${qd[0].flt} (${qd[0].from_icao} → ${qd[0].to_icao}) with ${ac.reg} first.</div>` : ''}
  </div><div class="mapbox"><canvas id="map-${trip.id}" aria-label="Route map ${trip.from_icao} to ${trip.to_icao}"></canvas></div></article>`;
 }
-function drawMap(cv, trip) {
+async function drawMap(cvs, trip) {
+  if (!cvs) return;
+  if (window.d3) { try { await drawLandMap(cvs, trip); return } catch (e) { console.warn('map', e) } }
+  drawDotMap(cvs, trip);
+}
+async function drawLandMap(cvs, trip) {
+  const p = plan(trip), A = D.airports[trip.from_icao], B = D.airports[trip.to_icao], AL = D.airports[p.alt];
+  const box = cvs.parentElement.getBoundingClientRect(), W = Math.max(260, box.width), H = Math.max(240, box.height), dpr = window.devicePixelRatio || 1;
+  cvs.width = W * dpr; cvs.height = H * dpr; const c = cvs.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const pts = [A, B, AL].filter(Boolean).map(a => [a.lon, a.lat]);
+  const lons = pts.map(x => x[0]), lats = pts.map(x => x[1]), cx = (Math.min(...lons) + Math.max(...lons)) / 2, cy = (Math.min(...lats) + Math.max(...lats)) / 2;
+  pts.push([cx - 2.5, cy - 1.5], [cx + 2.5, cy + 1.5]);   // never zoom in closer than a few degrees
+  const proj = d3.geoMercator().fitExtent([[50, 34], [W - 50, H - 30]], { type: 'MultiPoint', coordinates: pts });
+  const path = d3.geoPath(proj, c), land = await landShapes();
+  if (!cvs.isConnected) return;
+  c.fillStyle = cssv('--map-sea'); c.fillRect(0, 0, W, H);
+  c.beginPath(); path(d3.geoGraticule().step([5, 5])()); c.strokeStyle = cssv('--map-grid'); c.lineWidth = 1; c.stroke();
+  if (land) { c.beginPath(); path(land); c.fillStyle = cssv('--map-land'); c.fill(); c.strokeStyle = cssv('--map-land-edge'); c.lineWidth = .7; c.stroke() }
+  if (BORDERS) { c.beginPath(); path(BORDERS); c.strokeStyle = cssv('--map-border'); c.lineWidth = .6; c.stroke() }
+  if (AL) { c.beginPath(); path({ type: 'LineString', coordinates: [[B.lon, B.lat], [AL.lon, AL.lat]] }); c.setLineDash([3, 4]); c.strokeStyle = cssv('--map-muted'); c.lineWidth = 1.2; c.stroke(); c.setLineDash([]) }
+  c.beginPath(); path({ type: 'LineString', coordinates: [[A.lon, A.lat], [B.lon, B.lat]] }); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route');
+  c.lineWidth = 2.5; if (trip.kind === 'ferry') c.setLineDash([6, 4]); c.stroke(); c.setLineDash([]);
+  const dot = (a, label, col, r) => { const q = proj([a.lon, a.lat]); c.beginPath(); c.arc(q[0], q[1], r, 0, 7); c.fillStyle = col; c.fill(); c.strokeStyle = cssv('--surface'); c.lineWidth = 1.5; c.stroke();
+    if (!label) return; c.font = '600 12px "DM Mono", monospace'; const tw = c.measureText(label).width; let tx = q[0] + 8; if (tx + tw > W - 6) tx = q[0] - 8 - tw;
+    c.fillStyle = cssv('--map-label'); c.fillText(label, tx, q[1] - 7) };
+  if (AL) { const qa = proj([AL.lon, AL.lat]), qb = proj([B.lon, B.lat]); dot(AL, Math.hypot(qa[0] - qb[0], qa[1] - qb[1]) < 46 ? '' : AL.icao + ' ALT', cssv('--map-muted'), 3) }
+  dot(A, A.icao, cssv('--map-mark'), 5); dot(B, B.icao, cssv('--map-mark'), 5);
+}
+function drawDotMap(cv, trip) {
   if (!cv) return; const p = plan(trip); const [alt] = [p.alt];
   const pts = [trip.from_icao, trip.to_icao, alt].map(k => D.airports[k]).filter(Boolean);
   const box = cv.parentElement.getBoundingClientRect(); const W = Math.max(260, box.width), H = Math.max(240, box.height); const dpr = window.devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; const c = cv.getContext('2d'); c.scale(dpr, dpr);
@@ -724,7 +753,7 @@ function renderPlanner(trip) {
   const o = trip.ofp, kgOfp = o && /kg/i.test(o.units || '');
   const ofpWt = v => v == null || v === '' ? '—' : `${Math.round(+v).toLocaleString('en-US')} ${kgOfp ? 'kg' : 'lb'}`;
   $('#main').innerHTML = `<div class="section"><div class="sechead"><div><button type="button" class="linkbtn" data-act="planclose">← All trips</button>
-   <h2 style="margin-top:6px">${trip.flt} · ${trip.from_icao} to ${trip.to_icao}</h2><p>${esc(A?.city)} to ${esc(B?.city)} · ${ac.reg} ${esc(t.name)} · departs ${fmtDep(trip.dep_at, trip.from_icao)} · ${trip.kind === 'ferry' ? 'positioning, no passengers' : `${trip.pax} passenger${trip.pax > 1 ? 's' : ''}`}</p></div>${planChips(trip)}</div>
+   <h2 style="margin-top:6px">${trip.flt} · ${trip.from_icao} to ${trip.to_icao}</h2><p>${esc(A?.city)} to ${esc(B?.city)} · ${ac.reg} ${esc(t.name)} · ${trip.kind === 'ferry' ? `arrive ${trip.to_icao} by ${fmtDep(trip.dep_at, trip.to_icao)}` : `departs ${fmtDep(trip.dep_at, trip.from_icao)}`} · ${trip.kind === 'ferry' ? 'positioning, no passengers' : `${trip.pax} passenger${trip.pax > 1 ? 's' : ''}`}</p></div>${planChips(trip)}</div>
   <div class="planner">
    <div class="pcol">
     ${b ? `<div class="panel brief"><h3>Client brief</h3><p class="from">From ${esc(b.from)}</p>
@@ -773,11 +802,15 @@ function renderPlanner(trip) {
   drawGlobe($('#globe'), trip, o);
 }
 
-let LAND = null; const GLOBE = {};
+let LAND = null, BORDERS = null; const GLOBE = {};
 async function landShapes() {
   if (LAND) return LAND;
   if (!window.d3 || !window.topojson) return null;
-  try { const w = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json()); LAND = topojson.feature(w, w.objects.land) } catch (e) { LAND = null }
+  try {
+    const w = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json').then(r => r.json());
+    LAND = topojson.merge ? topojson.merge(w, w.objects.countries.geometries) : topojson.feature(w, w.objects.land);
+    BORDERS = topojson.mesh ? topojson.mesh(w, w.objects.countries, (x, y) => x !== y) : null;
+  } catch (e) { LAND = null }
   return LAND;
 }
 async function drawGlobe(cv, trip, ofp) {
@@ -801,6 +834,7 @@ async function drawGlobe(cv, trip, ofp) {
     c.beginPath(); path({ type: 'Sphere' }); c.fillStyle = cssv('--map-sea'); c.fill();
     c.beginPath(); path(grat); c.strokeStyle = cssv('--map-grid'); c.lineWidth = 1; c.stroke();
     if (land) { c.beginPath(); path(land); c.fillStyle = cssv('--map-land'); c.fill(); c.strokeStyle = cssv('--map-land-edge'); c.lineWidth = .6; c.stroke() }
+    if (BORDERS) { c.beginPath(); path(BORDERS); c.strokeStyle = cssv('--map-border'); c.lineWidth = .5; c.stroke() }
     if (AL) { c.beginPath(); path({ type: 'LineString', coordinates: [[B.lon, B.lat], [AL.lon, AL.lat]] }); c.setLineDash([3, 4]); c.strokeStyle = cssv('--map-muted'); c.lineWidth = 1.2; c.stroke(); c.setLineDash([]) }
     c.beginPath(); path(route); c.strokeStyle = trip.kind === 'ferry' ? '#B88A3A' : cssv('--map-route'); c.lineWidth = 3; c.stroke();
     const dot = (a, label, col, r) => { const p = proj([a.lon, a.lat]); if (!p || d3.geoDistance([a.lon, a.lat], proj.invert([W / 2, H / 2])) > Math.PI / 2) return;
