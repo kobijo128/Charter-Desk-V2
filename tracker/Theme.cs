@@ -49,6 +49,15 @@ public static class Theme
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    static extern int SetWindowTheme(IntPtr hwnd, string app, string idList);
+
+    /// <summary>Dark scroll bars (Windows 10 1809+ and 11).</summary>
+    public static void DarkScrollbars(IntPtr handle)
+    {
+        try { SetWindowTheme(handle, "DarkMode_Explorer", null); } catch { }
+    }
+
     /// <summary>Dark title bar on Windows 10 (1809+) and 11.</summary>
     public static void DarkTitleBar(IntPtr handle)
     {

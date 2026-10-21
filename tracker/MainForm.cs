@@ -102,6 +102,8 @@ public sealed class MainForm : Form
         _connect.Tick += (_, _) => TryConnect();
 
         HandleCreated += (_, _) => Theme.DarkTitleBar(Handle);
+        foreach (var c in new Control[] { _log, _bookings, _flightCol }) c.HandleCreated += (_, _) => Theme.DarkScrollbars(c.Handle);
+        _score.Resize += (_, _) => _result.MaximumSize = new Size(Math.Max(300, _score.Width - 40), 0);
         Shown += async (_, _) =>
         {
             if (Demo) return;
@@ -152,7 +154,8 @@ public sealed class MainForm : Form
         _setup.BackColor = Theme.Header;
         right.Controls.AddRange(new Control[] { _setup, _simPill, _pilot });
         header.Controls.Add(right);
-        header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Line });
+        right.Paint += (_, e) => { using var pen = new Pen(Theme.Line); e.Graphics.DrawLine(pen, 0, right.Height - 1, right.Width, right.Height - 1); };
+        header.Paint += (_, e) => { using var pen = new Pen(Theme.Line); e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1); };
         _simPill.Set("Waiting for the sim", Theme.Muted);
         return header;
     }
