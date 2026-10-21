@@ -16,7 +16,7 @@ tracker/     Windows flight tracker for MSFS (FSUIPC7), P3D (FSUIPC6) and X-Plan
 1. Create a free project at [supabase.com](https://supabase.com). Pick the region closest to most of your pilots.
 2. Open **SQL Editor**, paste in the whole of `supabase/schema.sql` and run it.
 3. Do the same with `supabase/seed.sql`. This adds the ten aircraft types, client types and 48 starter airports.
-4. Run each file in `supabase/migrations/` in number order (`002_…`, then `003_…`). These add company setup choices (starter aircraft, registrations, display settings) and worldwide airports with runway lengths.
+4. Run each file in `supabase/migrations/` in number order (`002_…` through `006_…`). These add company setup choices (starter aircraft, registrations, display settings) and worldwide airports with runway lengths.
 5. After you've created your staff account (step 4 below), open **Staff → Airports** and press **Refresh the worldwide list** to load all 7,954 airports. The list comes from [OurAirports](https://ourairports.com/data/), which is public domain.
 6. Go to **Project Settings → API** and note:
    - the **Project URL**

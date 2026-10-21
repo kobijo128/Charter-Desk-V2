@@ -172,6 +172,7 @@ public sealed class FlightRecorder
             ["landing_g"] = LandingG.HasValue ? (double?)Math.Round(LandingG.Value, 2) : null,
             ["bounces"] = Bounces,
             ["fuel_used_lb"] = Math.Round(Math.Max(0, FuelStart - FuelEnd)),
+            ["fuel_on_block_lb"] = Math.Round(FuelEnd),
             ["dist_flown"] = Math.Round(DistanceNm),
             ["max_sim_rate"] = Math.Round(MaxSimRate, 2),
             ["overspeed_s"] = (int)OverspeedSeconds,
